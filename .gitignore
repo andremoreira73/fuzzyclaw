@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Django
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+/static/
+/staticfiles/
+/media/
+
+# Environment
+.env
+.env.local
+.env.prod
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Agent container comms (ephemeral, cleaned up after each run)
+comms/
+
+# Agent data exchange (host-side output from containers)
+# Track the directory (via .gitkeep) but ignore contents
+in_and_out/*
+!in_and_out/.gitkeep
+
+# Test database
+test.db
+
+# Personal notes and backups
+my_notes.md
+design_notes_backup*.md

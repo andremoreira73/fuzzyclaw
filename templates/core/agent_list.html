@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+
+{% block title %}Agents — FuzzyClaw{% endblock title %}
+
+{% block breadcrumbs %}
+{% include "core/partials/breadcrumbs.html" with breadcrumbs=breadcrumbs %}
+{% endblock breadcrumbs %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Specialist Agents</h1>
+  <p class="text-gray-500 mt-1">{{ agents|length }} agent{{ agents|length|pluralize }} registered on the filesystem</p>
+</div>
+
+{% if agents %}
+<div class="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
+  {% for agent in agents %}
+  <div class="bg-white rounded-xl shadow-sm border p-5 hover:shadow-md transition-shadow">
+    <div class="flex items-start justify-between mb-3">
+      <h3 class="text-base font-semibold text-gray-900">{{ agent.name }}</h3>
+      {% if agent.has_image %}
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700" title="Docker image built">
+        <i class="fas fa-docker mr-1"></i> Ready
+      </span>
+      {% else %}
+      <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-700" title="Run sync_images to build">
+        <i class="fas fa-exclamation-circle mr-1"></i> No image
+      </span>
+      {% endif %}
+    </div>
+    <p class="text-sm text-gray-600 mb-4">{{ agent.description|default:"No description" }}</p>
+    <div class="flex flex-wrap gap-2 text-xs">
+      <span class="px-2 py-1 bg-indigo-50 text-indigo-700 rounded-md">
+        <i class="fas fa-brain mr-1"></i> {{ agent.model_choice }}
+      </span>
+      {% for tool in agent.tools %}
+      <span class="px-2 py-1 bg-purple-50 text-purple-700 rounded-md">
+        <i class="fas fa-wrench mr-1"></i> {{ tool }}
+      </span>
+      {% endfor %}
+      {% if agent.memory %}
+      <span class="px-2 py-1 bg-amber-50 text-amber-700 rounded-md">
+        <i class="fas fa-database mr-1"></i> memory
+      </span>
+      {% endif %}
+      {% for vol in agent.volumes %}
+      <span class="px-2 py-1 bg-slate-50 text-slate-700 rounded-md" title="{{ vol.host }} → {{ vol.mount }} ({{ vol.mode }})">
+        <i class="fas fa-hard-drive mr-1"></i> {{ vol.mount }} <span class="text-slate-400">{{ vol.mode }}</span>
+      </span>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+{% include "core/partials/empty_state.html" with icon="fa-robot" message='No agents found. Add <code>.md</code> files to the <code>agents/</code> directory.' %}
+{% endif %}
+{% endblock content %}

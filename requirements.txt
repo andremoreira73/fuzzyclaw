@@ -1,0 +1,41 @@
+# Django
+Django==5.1.5
+uvicorn==0.34.0
+
+# Database
+psycopg[binary]==3.2.9
+dj-database-url==2.3.0
+
+# Static files (for uvicorn — runserver handles this itself)
+whitenoise==6.8.2
+
+# REST API
+djangorestframework==3.16.0
+drf-spectacular==0.28.0
+django-cors-headers==4.6.0
+django-filter==24.3
+
+# Background tasks
+celery==5.4.0
+redis==5.2.1
+django-celery-beat==2.7.0
+
+# Agent runtime
+deepagents==0.4.11
+langgraph>=1.1
+langgraph-checkpoint-postgres>=3.0
+langchain>=1.2
+langchain-anthropic>=0.3
+langchain-openai>=0.3
+langchain-google-genai>=2.1
+
+# Validation
+pydantic==2.10.6
+
+# Container orchestration
+docker>=7.0
+
+# Utilities
+python-dotenv==1.0.1
+markdown2==2.5.3
+PyYAML>=6.0

@@ -1,0 +1,21 @@
+{% comment %}
+Empty state partial — centered icon + message + optional CTA.
+
+Usage:
+  {% include "core/partials/empty_state.html" with icon="fa-file-alt" message="No briefings yet." cta_url=create_url cta_text="Create your first briefing" %}
+  {% include "core/partials/empty_state.html" with icon="fa-robot" message="No agents found." %}
+
+Required: icon, message
+Optional: cta_url, cta_text
+Note: message is rendered with |safe so it can contain <code> tags.
+{% endcomment %}
+
+<div class="bg-white rounded-xl shadow-sm border p-12 text-center">
+  <i class="fas {{ icon }} text-4xl text-gray-300 mb-4"></i>
+  <p class="text-gray-500">{{ message|safe }}</p>
+  {% if cta_url %}
+    <a href="{{ cta_url }}" class="inline-flex items-center mt-4 text-indigo-600 hover:text-indigo-700 text-sm font-medium">
+      <i class="fas fa-plus mr-1"></i> {{ cta_text }}
+    </a>
+  {% endif %}
+</div>

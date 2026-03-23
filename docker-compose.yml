@@ -1,0 +1,146 @@
+services:
+  db:
+    image: postgres:16
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fuzzyclaw_dev}
+      POSTGRES_USER: ${POSTGRES_USER:-fuzzyclawuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-fuzzyclawuser} -d ${POSTGRES_DB:-fuzzyclaw_dev}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  web:
+    build: .
+    command: bash -c "python manage.py collectstatic --noinput && python manage.py migrate && uvicorn fuzzyclaw.asgi:application --host 0.0.0.0 --port 8200 --reload"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "983"
+    ports:
+      - "8200:8200"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=fuzzyclaw.settings.local
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
+      - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - PYTHONUNBUFFERED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+      # API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
+      - CLAW_API_TOKEN=${CLAW_API_TOKEN}
+
+      # Container orchestration — host path for Docker volume mounts
+      - HOST_PROJECT_DIR=${PWD}
+
+      # Redis Streams (db=1, separate from Celery broker on db=0)
+      - FUZZYCLAW_REDIS_URL=redis://redis:6379/1
+
+  celery:
+    build: .
+    command: celery -A fuzzyclaw worker -l info
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "983"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - DJANGO_SETTINGS_MODULE=fuzzyclaw.settings.local
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
+      - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - PYTHONUNBUFFERED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+      # API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
+      - CLAW_API_TOKEN=${CLAW_API_TOKEN}
+      - SCRAPE_MAX_TOKENS=${SCRAPE_MAX_TOKENS:-80000}
+
+      # Container orchestration — host path for Docker volume mounts
+      - HOST_PROJECT_DIR=${PWD}
+
+      # Redis Streams (db=1, separate from Celery broker on db=0)
+      - FUZZYCLAW_REDIS_URL=redis://redis:6379/1
+
+      # LangSmith (optional)
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fuzzyclaw}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
+
+  celery-beat:
+    build: .
+    command: bash -c "sleep 10 && celery -A fuzzyclaw beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      - DJANGO_SETTINGS_MODULE=fuzzyclaw.settings.local
+      - DB_HOST=db
+      - DB_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
+      - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - PYTHONUNBUFFERED=1
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+volumes:
+  postgres_data:
+
+networks:
+  default:
+    name: fuzzyclaw_default

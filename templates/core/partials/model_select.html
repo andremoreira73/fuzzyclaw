@@ -1,0 +1,28 @@
+{% comment %}
+Coordinator model select partial.
+
+Usage:
+  {% include "core/partials/model_select.html" with selected=briefing.coordinator_model %}
+  {% include "core/partials/model_select.html" with selected="gemini-2.5-pro" %}
+
+Required context: model_choices (list of (value, label) tuples from the view)
+Required: selected (the currently selected model value)
+Optional: model_url (enables HTMX auto-save on change)
+{% endcomment %}
+
+<div id="model-select" {% if model_url %}hx-boost="false"{% endif %}>
+  <label class="block text-sm font-medium text-gray-700 mb-2">
+    <i class="fas fa-brain mr-1"></i> Coordinator Model
+  </label>
+  <select name="coordinator_model"
+          {% if model_url %}
+            hx-post="{{ model_url }}"
+            hx-target="#model-select"
+            hx-swap="outerHTML"
+          {% endif %}
+          class="w-full p-3 border border-gray-200 rounded-lg text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500">
+    {% for value, label in model_choices %}
+      <option value="{{ value }}" {% if value == selected %}selected{% endif %}>{{ label }}</option>
+    {% endfor %}
+  </select>
+</div>

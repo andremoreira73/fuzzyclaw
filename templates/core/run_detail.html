@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% load markdown_extras %}
+{% block title %}
+  Run #{{ run.id }} — FuzzyClaw
+{% endblock title %}
+{% block breadcrumbs %}
+  {% include "core/partials/breadcrumbs.html" with breadcrumbs=breadcrumbs %}
+{% endblock breadcrumbs %}
+{% block content %}
+  <div id="run-content"
+       {% if run.status == 'running' or run.status == 'pending' %} hx-get="{% url 'core:run_status' run.pk %}" hx-trigger="every 5s" hx-target="#run-content" hx-swap="outerHTML" {% endif %}>
+    <!-- Header -->
+    <div class="flex justify-between items-start mb-6">
+      <div>
+        <div class="flex items-center space-x-3">
+          <h1 class="text-2xl font-bold text-gray-900">Run #{{ run.id }}</h1>
+          {% include "core/partials/status_badge.html" with status=run.status text=run.get_status_display size="lg" %}
+        </div>
+        <p class="text-gray-500 mt-1">
+          <a href="{% url 'core:briefing_detail' run.briefing.pk %}"
+             class="hover:text-indigo-600 transition-colors">{{ run.briefing.title }}</a>
+          &middot; {{ run.get_triggered_by_display }} &middot; {{ run.created_at|date:"M d, Y H:i" }}
+        </p>
+      </div>
+      {% if run.status == 'completed' or run.status == 'failed' %}
+        <a href="{% url 'core:briefing_detail' run.briefing.pk %}"
+           class="px-4 py-2 text-sm text-gray-600 bg-white border rounded-lg hover:bg-gray-50 transition-colors">
+          <i class="fas fa-arrow-left mr-1"></i> Back to Briefing
+        </a>
+      {% endif %}
+    </div>
+    <!-- Timing -->
+    {% if run.started_at %}
+      <div class="flex items-center space-x-6 text-sm text-gray-500 mb-6">
+        <span><i class="fas fa-play mr-1"></i> Started: {{ run.started_at|date:"H:i:s" }}</span>
+        {% if run.completed_at %}
+          <span><i class="fas fa-stop mr-1"></i> Completed: {{ run.completed_at|date:"H:i:s" }}</span>
+          <span><i class="fas fa-clock mr-1"></i> Duration: {{ run.started_at|timesince:run.completed_at }}</span>
+        {% endif %}
+      </div>
+    {% endif %}
+    <!-- Error -->
+    {% if run.error_message %}
+      <div class="bg-red-50 border border-red-200 rounded-xl p-5 mb-6">
+        <h3 class="text-sm font-semibold text-red-800 mb-1">
+          <i class="fas fa-exclamation-triangle mr-1"></i> Error
+        </h3>
+        <pre class="text-sm text-red-700 whitespace-pre-wrap font-mono">{{ run.error_message }}</pre>
+      </div>
+    {% endif %}
+    <!-- Coordinator Report -->
+    {% if run.coordinator_report %}
+      <div class="bg-white rounded-xl shadow-sm border p-6 mb-6">
+        <h2 class="text-lg font-semibold text-gray-900 mb-4">
+          <i class="fas fa-brain mr-2 text-indigo-500"></i> Coordinator Report
+        </h2>
+        <div class="prose prose-sm max-w-none text-gray-700">{{ run.coordinator_report|render_markdown }}</div>
+      </div>
+    {% endif %}
+    <!-- Agent Runs -->
+    <div class="bg-white rounded-xl shadow-sm border p-6">
+      <h2 class="text-lg font-semibold text-gray-900 mb-4">
+        <i class="fas fa-robot mr-2 text-purple-500"></i> Specialist Reports ({{ agent_runs|length }})
+      </h2>
+      {% if agent_runs %}
+        <div class="space-y-4" x-data="{ openReport: null }">
+          {% for ar in agent_runs %}
+            <div class="border rounded-lg overflow-hidden">
+              <!-- Agent Run Header (clickable) -->
+              <button @click="openReport = openReport === {{ ar.pk }} ? null : {{ ar.pk }}"
+                      class="w-full flex items-center justify-between p-4 hover:bg-gray-50 transition-colors text-left">
+                <div class="flex items-center space-x-3">
+                  {% include "core/partials/status_badge.html" with status=ar.status %}
+                  <span class="font-medium text-gray-900">{{ ar.agent_name }}</span>
+                  {% if ar.container_id %}
+                    <span class="text-xs font-mono text-gray-400">{{ ar.container_id|truncatechars:15 }}</span>
+                  {% endif %}
+                </div>
+                <div class="flex items-center space-x-3 text-xs text-gray-400">
+                  {% if ar.started_at and ar.completed_at %}<span>{{ ar.started_at|timesince:ar.completed_at }}</span>{% endif %}
+                  <i class="fas fa-chevron-down transition-transform"
+                     :class="openReport === {{ ar.pk }} ? 'rotate-180' : ''"></i>
+                </div>
+              </button>
+              <!-- Agent Run Report (expandable) -->
+              <div x-show="openReport === {{ ar.pk }}"
+                   x-collapse
+                   class="border-t bg-gray-50 p-4">
+                {% if ar.report %}
+                  <div class="prose prose-sm max-w-none text-gray-700">{{ ar.report|render_markdown }}</div>
+                {% endif %}
+                {% if ar.error_message %}
+                  <div class="mt-3 p-3 bg-red-50 rounded-lg">
+                    <pre class="text-sm text-red-700 whitespace-pre-wrap font-mono">{{ ar.error_message|truncatechars:500 }}</pre>
+                  </div>
+                {% endif %}
+                {% if not ar.report and not ar.error_message %}
+                  <p class="text-sm text-gray-400 italic">
+                    {% if ar.status == 'running' %}
+                      Agent is still running...
+                    {% else %}
+                      No report available.
+                    {% endif %}
+                  </p>
+                {% endif %}
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <p class="text-gray-400 text-sm text-center py-4">
+          {% if run.status == 'pending' %}
+            Waiting for coordinator to start...
+          {% elif run.status == 'running' %}
+            Coordinator is working, agents will appear here...
+          {% else %}
+            No specialists were dispatched.
+          {% endif %}
+        </p>
+      {% endif %}
+    </div>
+  </div>
+{% endblock content %}

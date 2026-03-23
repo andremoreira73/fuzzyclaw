@@ -1,0 +1,17 @@
+# Minimal dependencies for agent containers — no Django, no DRF, no Celery.
+deepagents==0.4.11
+langgraph>=1.1
+langgraph-checkpoint-postgres>=3.0
+langchain>=1.2
+langchain-anthropic>=0.3
+langchain-openai>=0.3
+langchain-google-genai>=2.1
+psycopg[binary]==3.2.9
+pydantic==2.10.6
+# Redis (for completion signaling via Redis Streams)
+redis>=5.0
+# Web scraping
+requests>=2.31
+beautifulsoup4>=4.12
+tiktoken>=0.7
+PyYAML>=6.0

@@ -1,0 +1,26 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# System dependencies (gcc for psycopg binary build)
+RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
+
+# Python dependencies — minimal agent set, no Django
+COPY requirements-agent.txt .
+RUN pip install --no-cache-dir -r requirements-agent.txt
+
+# Container entrypoint + tool implementations
+COPY agent_runner.py .
+COPY agent_tools/ ./agent_tools/
+
+# Non-root user
+RUN groupadd -g 1000 appuser && \
+    useradd -u 1000 -g 1000 -m appuser && \
+    chown -R appuser:appuser /app
+
+USER appuser
+
+ENTRYPOINT ["python", "agent_runner.py"]

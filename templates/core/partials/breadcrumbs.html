@@ -1,0 +1,19 @@
+<nav class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4">
+  <ol class="flex items-center space-x-2 text-sm text-gray-500">
+    <li>
+      <a href="{% url 'core:dashboard' %}" class="hover:text-indigo-600 transition-colors">
+        <i class="fas fa-home"></i>
+      </a>
+    </li>
+    {% for crumb in breadcrumbs %}
+    <li class="flex items-center space-x-2">
+      <i class="fas fa-chevron-right text-xs text-gray-300"></i>
+      {% if crumb.url %}
+        <a href="{{ crumb.url }}" class="hover:text-indigo-600 transition-colors">{{ crumb.label }}</a>
+      {% else %}
+        <span class="text-gray-800 font-medium">{{ crumb.label }}</span>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+</nav>

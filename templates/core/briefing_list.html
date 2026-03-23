@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Briefings — FuzzyClaw{% endblock title %}
+
+{% block breadcrumbs %}
+{% include "core/partials/breadcrumbs.html" with breadcrumbs=breadcrumbs %}
+{% endblock breadcrumbs %}
+
+{% block content %}
+<!-- Header -->
+<div class="flex justify-between items-center mb-6">
+  <div>
+    <h1 class="text-2xl font-bold text-gray-900">Briefings</h1>
+    <p class="text-gray-500 mt-1">{{ briefings|length }} briefing{{ briefings|length|pluralize }} ({{ active_count }} active)</p>
+  </div>
+  <a href="{% url 'core:briefing_create' %}" class="inline-flex items-center px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg text-sm font-medium hover:from-indigo-700 hover:to-purple-700 transition-all shadow-sm">
+    <i class="fas fa-plus mr-2"></i> New Briefing
+  </a>
+</div>
+
+{% if briefings %}
+<div class="grid gap-4">
+  {% for briefing in briefings %}
+  <a href="{% url 'core:briefing_detail' briefing.pk %}" class="bg-white rounded-xl shadow-sm border p-5 hover:shadow-md transition-shadow group">
+    <div class="flex items-start justify-between">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center space-x-3">
+          <h3 class="text-base font-semibold text-gray-900 group-hover:text-indigo-600 transition-colors truncate">{{ briefing.title }}</h3>
+          {% if briefing.is_active %}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Active</span>
+          {% else %}
+          <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-500">Inactive</span>
+          {% endif %}
+        </div>
+        <p class="text-sm text-gray-500 mt-1 line-clamp-2">{{ briefing.content|truncatewords:30 }}</p>
+        <div class="flex items-center space-x-4 mt-3 text-xs text-gray-400">
+          <span><i class="fas fa-brain mr-1"></i> {{ briefing.coordinator_model }}</span>
+          {% if briefing.schedule_text %}
+          <span><i class="fas fa-clock mr-1"></i> {{ briefing.schedule_text }}</span>
+          {% endif %}
+          <span>{{ briefing.runs.count }} run{{ briefing.runs.count|pluralize }}</span>
+          <span>Updated {{ briefing.updated_at|timesince }} ago</span>
+        </div>
+      </div>
+      <i class="fas fa-chevron-right text-gray-300 group-hover:text-indigo-400 mt-1 ml-4"></i>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+{% else %}
+{% url 'core:briefing_create' as create_url %}
+{% include "core/partials/empty_state.html" with icon="fa-file-alt" message="No briefings yet." cta_url=create_url cta_text="Create your first briefing" %}
+{% endif %}
+{% endblock content %}

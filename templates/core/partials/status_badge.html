@@ -1,0 +1,15 @@
+{% comment %}
+Status badge partial — color-coded pill with optional spinner.
+
+Usage:
+  {% include "core/partials/status_badge.html" with status=run.status %}
+  {% include "core/partials/status_badge.html" with status=run.status text=run.get_status_display size="lg" %}
+
+Required: status (completed|running|failed|pending)
+Optional: text (defaults to status), size ("sm" default, "lg" for headers)
+{% endcomment %}
+
+<span class="inline-flex items-center {% if size == 'lg' %}px-3 py-1 text-sm{% else %}px-2 py-0.5 text-xs{% endif %} rounded-full font-medium {% if status == 'completed' %}bg-green-100 text-green-700{% elif status == 'running' %}bg-amber-100 text-amber-700{% elif status == 'failed' %}bg-red-100 text-red-700{% else %}bg-gray-100 text-gray-700{% endif %}">
+  {% if status == 'running' %}<i class="fas fa-spinner fa-spin mr-1"></i>{% endif %}
+  {{ text|default:status }}
+</span>

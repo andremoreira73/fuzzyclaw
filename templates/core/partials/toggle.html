@@ -1,0 +1,30 @@
+{% comment %}
+Toggle switch partial.
+
+Usage (HTMX — instant save):
+  {% include "core/partials/toggle.html" with name="is_active" checked=briefing.is_active label="Active" hint="..." toggle_url=toggle_url %}
+
+Usage (plain — inside a form):
+  {% include "core/partials/toggle.html" with name="is_active" checked=True label="Active" %}
+
+Required: name, checked
+Optional: label (default "Active"), hint, toggle_url (enables HTMX post-on-click)
+{% endcomment %}
+
+<div id="toggle-{{ name }}"
+     {% if toggle_url %}
+       hx-post="{{ toggle_url }}"
+       hx-include="[name='schedule_text'], [name='coordinator_model']"
+       hx-target="#toggle-{{ name }}"
+       hx-swap="outerHTML"
+     {% endif %}>
+  <label class="group flex items-center justify-between cursor-pointer select-none">
+    <span class="text-sm font-medium text-gray-700">{{ label|default:"Active" }}</span>
+    <div class="relative">
+      <input type="checkbox" name="{{ name }}" class="sr-only peer"{% if checked %} checked{% endif %}>
+      <div class="w-11 h-6 bg-gray-200 rounded-full transition-colors duration-200 peer-checked:bg-green-500 peer-focus-visible:ring-2 peer-focus-visible:ring-green-400 peer-focus-visible:ring-offset-2"></div>
+      <div class="absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow-sm transition-transform duration-200 peer-checked:translate-x-5"></div>
+    </div>
+  </label>
+  {% if hint %}<p class="text-xs text-gray-400 mt-2">{{ hint }}</p>{% endif %}
+</div>

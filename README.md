@@ -12,12 +12,12 @@ Besides: I am a Python and Django guy. While I find TypeScript cool and intrigui
 
 The philosophy is simple: optionality and scalability, just like OpenClaw. But in Python, using Django's batteries included. We use LangChain's [Deep Agents](https://github.com/langchain-ai/deep-agents) so we can plug in any model we want.
 
-- The coordinator reads the briefings you prepare. In the spirit of top managers, it can only delegate, not do. It can't screw up your PC because ot does not have the tools.
-- The specialists do all the sweating and report back. Familiar setup in companies, I guess. But they live in a container, so they can't really screw up your PC. You can give them access to parts of your filesystem (or all of it) at your own risk — your choice when you create your agents.
+- The coordinator reads the briefings you prepare. In the spirit of top managers, it can only delegate, not do. It can't screw up your PC because it does not have the tools.
+- The specialists do all the sweating and report back. Familiar setup in companies, I guess. But they live in a container, so they can't really screw up your PC. You can give them access to parts of your filesystem (or all of it) at your own risk. It is your choice when you create your agents.
 - One special agent, **Shenlong**, is really powerful within its container. If no other specialist fits the task, the coordinator can always call it.
 - Add skills (under `skills/`), and all agents will have access to them.
 
-Django handles everything the user touches: auth, dashboards, briefing editor, run history, admin. The frontend is server-rendered HTML with the great and really cool [HTMX](https://htmx.org/) sprinkled throughout. I wanted structured persistence: reports, history, search, filtering, scheduling. Agents come and go; the database is forever. That's why Django + PostgreSQL, not a serverless function chain.
+Django handles everything the user touches: auth, dashboards, briefing editor, run history, admin. The frontend is server-rendered HTML with the great and really cool [HTMX](https://htmx.org/) sprinkled throughout. I wanted structured persistence: reports, history, search, filtering, scheduling. That's why Django + PostgreSQL.
 
 Every specialist agent gets its own Docker container with only the tools and API keys it needs. A web scraping agent gets `web_scrape`. Shenlong gets everything including `bash` — the nuclear option. Better only grant that to stronger models you trust. Containers exit after reporting; the coordinator reads the report and moves on.
 

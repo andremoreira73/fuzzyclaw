@@ -249,30 +249,30 @@ dispatch_specialist() [host-side, has Django ORM]
 
 ## Resolved Decisions
 
-| Question                 | Decision                                                                                                                                                                                                                                                              |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Agent framework          | Deep Agents (LangChain/LangGraph) — replaces nanoclaw. Python-native, multi-provider LLM, Django ORM access.                                                                                                                                                          |
-| Container isolation      | One container per launched agent (coordinator + each specialist). Keep nanoclaw's best pattern.                                                                                                                                                                       |
-| LLM providers            | Multi-provider via LangChain: Claude (Opus/Sonnet), GPT-5/GPT-5-mini (OpenAI), Gemini (Google). Configurable per agent.                                                                                                                                               |
-| Agent definition format  | `.md` files in `agents/` dir — YAML frontmatter (name, description, model, tools, memory, volumes) + prompt body. Filesystem is source of truth, read at runtime by `core/registry.py`.                                                                               |
-| Skill format             | Directory with `SKILL.md` in `skills/` dir. Filesystem only, read at runtime by `core/registry.py`.                                                                                                                                                                   |
-| Tools                    | YAML list in agent frontmatter. Python code in `agent_tools/` (container-side) and `core/agent_tools.py` (coordinator-side). Validated against `FUZZYCLAW_TOOLS` registry.                                                                                             |
-| Briefing → agent mapping | Briefing specifies steps; coordinator decides which specialists to dispatch based on briefing content + available agents.                                                                                                                                             |
-| Reports                  | Two levels: specialist reports (AgentRun.report) + coordinator synthesis (Run.coordinator_report).                                                                                                                                                                    |
-| Persistent memory        | Per-briefing scope. Agent memory namespaced by briefing ID in PostgresStore — prevents cross-contamination between different use cases.                                                                                                                               |
-| Coordinator launch       | Django triggers coordinator container (Docker SDK) via Celery task. "Run Now" button → `launch_coordinator.delay(run_id)` → returns immediately.                                                                                                                      |
-| Specialist launch        | Coordinator dispatches by agent name. Admin-triggered `sync_images` pre-builds Docker images. Dispatch = `docker run` against pre-built image (no build on critical path). No in-process fallback.                                                                    |
-| Container image strategy | Two-layer: shared base image (all agent deps, ~437MB, built once) + per-agent thin layer (just `COPY agent.md` + skill deps, sub-second build). Editing an agent `.md` → `sync_images` only rebuilds the thin layer.                                                  |
-| Container communication  | Shared volume (`comms/{agent_run_id}/`). Agent writes `report.json`, dispatcher reads host-side. Not network sockets, not DB writes. Clean separation.                                                                                                                |
-| Coordinator placement    | Coordinator runs host-side in Celery worker (has Django ORM). NOT in a container. Only specialists are containerized.                                                                                                                                                 |
-| Skill + agent management | Filesystem only. Drop `.md` files in `agents/`, skill dirs in `skills/`. Dashboard shows read-only view. No admin forms.                                                                                                                                              |
-| Image lifecycle          | Background Celery task watches `agents/` dir, tracks file hashes, builds/rebuilds/deletes images. Decouples slow image builds from fast agent dispatch.                                                                                                               |
-| API auth                 | Django token auth for the agent runtime                                                                                                                                                                                                                               |
-| WhatsApp                 | Defer, but keep infra available                                                                                                                                                                                                                                       |
-| Scheduling               | Celery Beat with `django-celery-beat` (DatabaseScheduler). Direct LLM call (Gemini Flash) parses NL schedule → cron. Coordinator also has `manage_schedule` tool for programmatic schedule changes. No cron on host.                                                  |
-| `manage_schedule` tool   | Coordinator tool (not skill). Wraps `sync_schedule()` to create/update/delete Celery Beat `PeriodicTask` entries. Allows coordinators to adapt briefing frequency based on agent findings.                                                                             |
-| Scraping method          | ScrapingBee API (existing account) — available as a tool/skill, not baked into the platform                                                                                                                                                                           |
-| Frontend                 | Django + HTMX + Tailwind CDN. No separate JS frontend.                                                                                                                                                                                                                |
+| Question                 | Decision                                                                                                                                                                                                             |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Agent framework          | Deep Agents (LangChain/LangGraph) — replaces nanoclaw. Python-native, multi-provider LLM, Django ORM access.                                                                                                         |
+| Container isolation      | One container per launched agent (coordinator + each specialist). Keep nanoclaw's best pattern.                                                                                                                      |
+| LLM providers            | Multi-provider via LangChain: Claude (Opus/Sonnet), GPT-5/GPT-5-mini (OpenAI), Gemini (Google). Configurable per agent.                                                                                              |
+| Agent definition format  | `.md` files in `agents/` dir — YAML frontmatter (name, description, model, tools, memory, volumes) + prompt body. Filesystem is source of truth, read at runtime by `core/registry.py`.                              |
+| Skill format             | Directory with `SKILL.md` in `skills/` dir. Filesystem only, read at runtime by `core/registry.py`.                                                                                                                  |
+| Tools                    | YAML list in agent frontmatter. Python code in `agent_tools/` (container-side) and `core/agent_tools.py` (coordinator-side). Validated against `FUZZYCLAW_TOOLS` registry.                                           |
+| Briefing → agent mapping | Briefing specifies steps; coordinator decides which specialists to dispatch based on briefing content + available agents.                                                                                            |
+| Reports                  | Two levels: specialist reports (AgentRun.report) + coordinator synthesis (Run.coordinator_report).                                                                                                                   |
+| Persistent memory        | Per-briefing scope. Agent memory namespaced by briefing ID in PostgresStore — prevents cross-contamination between different use cases.                                                                              |
+| Coordinator launch       | Django triggers coordinator container (Docker SDK) via Celery task. "Run Now" button → `launch_coordinator.delay(run_id)` → returns immediately.                                                                     |
+| Specialist launch        | Coordinator dispatches by agent name. Admin-triggered `sync_images` pre-builds Docker images. Dispatch = `docker run` against pre-built image (no build on critical path). No in-process fallback.                   |
+| Container image strategy | Two-layer: shared base image (all agent deps, ~437MB, built once) + per-agent thin layer (just `COPY agent.md` + skill deps, sub-second build). Editing an agent `.md` → `sync_images` only rebuilds the thin layer. |
+| Container communication  | Shared volume (`comms/{agent_run_id}/`). Agent writes `report.json`, dispatcher reads host-side. Not network sockets, not DB writes. Clean separation.                                                               |
+| Coordinator placement    | Coordinator runs host-side in Celery worker (has Django ORM). NOT in a container. Only specialists are containerized.                                                                                                |
+| Skill + agent management | Filesystem only. Drop `.md` files in `agents/`, skill dirs in `skills/`. Dashboard shows read-only view. No admin forms.                                                                                             |
+| Image lifecycle          | Background Celery task watches `agents/` dir, tracks file hashes, builds/rebuilds/deletes images. Decouples slow image builds from fast agent dispatch.                                                              |
+| API auth                 | Django token auth for the agent runtime                                                                                                                                                                              |
+| WhatsApp                 | Defer, but keep infra available                                                                                                                                                                                      |
+| Scheduling               | Celery Beat with `django-celery-beat` (DatabaseScheduler). Direct LLM call (Gemini Flash) parses NL schedule → cron. Coordinator also has `manage_schedule` tool for programmatic schedule changes. No cron on host. |
+| `manage_schedule` tool   | Coordinator tool (not skill). Wraps `sync_schedule()` to create/update/delete Celery Beat `PeriodicTask` entries. Allows coordinators to adapt briefing frequency based on agent findings.                           |
+| Scraping method          | ScrapingBee API (existing account) — available as a tool/skill, not baked into the platform                                                                                                                          |
+| Frontend                 | Django + HTMX + Tailwind CDN. No separate JS frontend.                                                                                                                                                               |
 
 ### Superseded Decisions
 
@@ -296,6 +296,7 @@ dispatch_specialist() [host-side, has Django ORM]
 ## Graffiti Wall
 
 Done:
+
 - ~~Briefing scheduling~~ — implemented via NL-to-cron with LLM parsing
 - ~~LangSmith visibility for sub-agents~~ — LANGSMITH_ENDPOINT passed to containers
 - ~~Skills path bug~~ — fixed /app/app/skills → /skills virtual path
@@ -306,7 +307,14 @@ Done:
 - ~~djLint~~ — formatter for Django templates, no more Prettier mangling
 
 Still to do:
+
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (notifications + commands)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
 - Login / logout page styling
+
+Idea:
+
+- keep specialist container on until the coordinator tells it can go.
+  While the specialist is ephemeral, by keeping it on for a while the coordinator
+  has an opportunity to use the same agent (and its existing context) to refine stuff.

@@ -318,3 +318,5 @@ Idea:
 - keep specialist container on until the coordinator tells it can go.
   While the specialist is ephemeral, by keeping it on for a while the coordinator
   has an opportunity to use the same agent (and its existing context) to refine stuff.
+
+- We need to have a way to include human in the loop in those runs. This makes the previous comment even more relevant.

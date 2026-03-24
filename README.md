@@ -247,6 +247,7 @@ nanoclaw is excellent and inspired FuzzyClaw directly — especially the contain
 
 Things I want to add when time allows:
 
+- **Human in the loop** — many tasks will require human input / buy-in as they get done
 - **WhatsApp channel** — notifications and commands via WhatsApp (the infra is ready, just needs wiring)
 - **Direct agent dispatch** — talk to a specific agent one-on-one from the dashboard, no coordinator needed
 - **Stop button** — cancel a running run from the UI

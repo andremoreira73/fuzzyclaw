@@ -247,6 +247,155 @@ dispatch_specialist() [host-side, has Django ORM]
 
   **UI:** HTMX Schedule button with loading spinner, schedule status partial showing active/paused/stale state. The `is_active` toggle pauses/resumes the schedule. Briefing `post_delete` signal cleans up the PeriodicTask.
 
+### Message Board (planned)
+
+- **Contract:** A per-run shared communication channel where agents, coordinator, and the human operator can exchange messages. Agents can ask the human questions, share findings with each other, and the human can follow along or reply. The dashboard shows a floating, draggable panel; a CLI command provides a terminal-based view.
+- **Status:** planned
+- **Why:** Transforms FuzzyClaw from fire-and-forget into a collaborative platform. Agents that can pause and ask make the system dramatically more useful for ambiguous tasks. Agent-to-agent messaging enables emergent coordination beyond what the coordinator prescribes. The human stays in the loop without babysitting.
+
+- **Design notes:**
+
+  **Core principle:** A message board, not a chatbot. Agents post when they need something. The human responds when they want to. All participants — agents, coordinator, human — are peers on the same board.
+
+  **Addressing:** Every participant has a unique ID on the board:
+  - Specialist agents: `{agent_name}_{agent_run_id}` (e.g. `market-researcher_423`)
+  - Coordinator: `coordinator_{run_id}`
+  - Human: `human`
+
+  The `_{id}` suffix is always present, even when unambiguous. Keeps addressing simple and code paths uniform. The autocomplete in the dashboard shows agent name + task excerpt + run context in a single line.
+
+  **Transport:** Redis Streams (one stream per run: `fuzzyclaw:board:{run_id}`). Every message is an entry:
+  ```json
+  {"from": "market-researcher_423", "to": "human", "content": "Which market?", "ts": "..."}
+  ```
+  Addressed to a specific participant or `all`. Redis Streams are ideal: ordered, persistent until cleanup, support blocking reads, and every consumer tracks its own read position.
+
+  **Persistence:** `BoardMessage` Django model mirrors every message for history, dashboard display, and audit. Redis is the live transport (instant signaling). DB is the archive (survives Redis restarts, powers dashboard queries). Dashboard reads from DB via HTMX polling.
+
+  **Participant registry:** Redis Set per run: `fuzzyclaw:board:{run_id}:participants`. Each agent registers on startup (`SADD`), deregisters on exit. The `list_participants()` tool queries this in real-time so agents dispatched later can discover agents dispatched earlier.
+
+  #### Data model
+
+  **BoardMessage** (new Django model):
+
+  | Field      | Type           | Notes                                                   |
+  | ---------- | -------------- | ------------------------------------------------------- |
+  | run        | FK→Run         | Board is scoped per run                                 |
+  | sender     | CharField(150) | `market-researcher_423`, `human`, `coordinator_47`      |
+  | recipient  | CharField(150) | `human`, `summarizer_456`, `all`                        |
+  | content    | TextField      | The message (short — long content goes to comms volume) |
+  | created_at | DateTimeField  | auto_now_add                                            |
+
+  **AgentRun.status** gains a new value: `waiting_for_human` — set when the agent posts to `human` and blocks on `read_messages()`. Dashboard and coordinator can see which agents are paused.
+
+  #### Container-side tools (`agent_tools/message_board.py`)
+
+  Three tools, gated by `message_board` in the agent's frontmatter `tools` list:
+
+  | Tool                | Args                          | Behavior                                                                                                  |
+  | ------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------------- |
+  | `post_message`      | `to: str`, `message: str`     | XADD to Redis stream + write to DB via Redis pubsub relay. Returns immediately.                           |
+  | `read_messages`     | `wait_seconds: int` (default 0) | XREAD from stream, filtered for messages to this agent or `all`. Blocks up to `wait_seconds`. Returns JSON list. |
+  | `list_participants` | (none)                        | SMEMBERS on participant set. Returns JSON list of active participant IDs.                                  |
+
+  **Blocking ask pattern** (no special `ask_human` wrapper — the LLM chains these naturally):
+  ```
+  post_message(to="human", message="Which market should I focus on?")
+  read_messages(wait_seconds=1800)  # blocks up to 30 min
+  ```
+
+  **Agent-to-agent pattern:**
+  ```
+  list_participants()  # discover who's active
+  post_message(to="summarizer_456", message="Findings ready, see /comms/market-researcher_423/fintech.md")
+  ```
+
+  **Long content etiquette:** The board is for short messages. When an agent has long output (reports, data), it writes the content to its comms subdirectory (`/app/comms/{agent_name}_{agent_run_id}/filename.ext`) and posts a board message referencing the path. Both other agents and the human can access the file — agents via the shared volume, human via the dashboard or host filesystem.
+
+  **Timeout:** If `read_messages(wait_seconds=1800)` expires without a response, it returns an empty list. The agent decides what to do — typically proceeds with best judgment. Configurable via `FUZZYCLAW_HITL_TIMEOUT` (default 1800s / 30 min).
+
+  #### Container changes (`start_agent_container` + `agent_runner.py`)
+
+  New env vars passed to container:
+  - `SELF_ID` — this agent's board identity (e.g. `market-researcher_423`)
+  - `REDIS_URL` — already passed, reused for board
+  - `RUN_ID` — already passed, reused for board stream key
+
+  On startup, `agent_runner.py`:
+  1. Registers participant: `SADD fuzzyclaw:board:{run_id}:participants {self_id}`
+  2. Injects board context into system prompt:
+     > You are `market-researcher_423` on this run's message board. Use `list_participants()` to see who's active. Post to `human` when you need input. Post to other agents to share findings. For long content, write files to your comms directory and reference the path.
+  3. On exit (success or failure), deregisters: `SREM fuzzyclaw:board:{run_id}:participants {self_id}`
+
+  Agent frontmatter example:
+  ```yaml
+  tools: ["web_search", "web_scrape", "message_board"]
+  ```
+
+  #### Host-side relay (DB persistence)
+
+  Container-side tools write to Redis only (no Django ORM in containers). A Celery worker relay persists messages to the `BoardMessage` model continuously — regardless of whether the dashboard is open.
+
+  **Implementation:** A long-lived Celery task (`board_relay`) that:
+  1. Listens to Redis Streams for all active runs (`XREAD` with blocking)
+  2. Persists each message as a `BoardMessage` row in DB
+  3. When `recipient="human"`, updates the AgentRun status to `waiting_for_human`
+
+  This runs inside the existing Celery worker (no new service in docker-compose). It ensures the DB is always current, so the dashboard shows correct state even on first load, and historical board messages are always queryable.
+
+  The **live path** (agent↔agent, agent↔human) goes through Redis directly — low latency, no DB round-trip for the blocking `read_messages()` call. The DB is the archive, not the transport.
+
+  #### Dashboard: floating Message Board panel
+
+  **Navbar icon:** New icon after Skills link in the nav: `<i class="fas fa-clipboard-list"></i>` (or similar). Shows a badge count of unread messages to `human` across all active runs. Clicking toggles the floating panel.
+
+  **Floating panel** (Alpine.js component):
+  - Draggable, resizable, closable (X button)
+  - Re-opens with subtle animation when a new message to `human` arrives
+  - Positioned bottom-right by default, remembers position via localStorage
+
+  **Panel layout:**
+  ```
+  ┌─ Message Board ─── ◀ Run #47: Weekly Markets ▶ ── ○ ✕ ┐
+  │ [All]  [To me (2)]                                      │
+  │                                                          │
+  │  (chronological message feed — see mockup above)         │
+  │                                                          │
+  ├──────────────────────────────────────────────────────────┤
+  │ @market-researcher_423 your answer here             ⏎   │
+  └──────────────────────────────────────────────────────────┘
+  ```
+
+  - **Run selector:** ◀ ▶ arrows cycle through runs that have active boards (at least one participant registered). Shows run title + ID.
+  - **Filter tabs:** "All" shows every message on this run's board. "To me" shows only messages where `recipient='human'`. Badge count on "To me" shows unanswered questions.
+  - **Input:** `@` triggers autocomplete dropdown (single-line, showing `agent_name_id · task excerpt · status dot`). Pre-fills `@` with the only waiting agent when unambiguous.
+  - **Agent messages** rendered in bordered boxes (visually distinct from human replies).
+  - **HTMX polling** every 2-3 seconds for new messages. The endpoint syncs Redis→DB and returns the partial.
+  - **Submitting a reply:** HTMX POST → Django view parses the `@recipient` prefix → writes `BoardMessage` to DB + XADD to Redis stream → agent's `read_messages()` unblocks.
+
+  #### WhatsApp channel (deferred)
+
+  Same `BoardMessage` model, different notification dispatch. When a message arrives with `to="human"`:
+  1. Check user preference (toggle on dashboard Quick Actions area)
+  2. If WhatsApp enabled → send via WhatsApp API (reference nanoclaw's implementation — not Twilio)
+  3. Human replies to WhatsApp → webhook receives it → writes `BoardMessage` + XADD to Redis
+  4. Agent unblocks as normal
+
+  WhatsApp toggle: HTMX toggle button in the Quick Actions section of the dashboard, same pattern as `is_active` toggle on briefings. Stored as a user preference (new field on User profile or a `UserPreference` model).
+
+  #### Implementation order
+
+  1. `BoardMessage` model + migration
+  2. `agent_tools/message_board.py` — container-side tools (post, read, list)
+  3. `agent_runner.py` changes — register/deregister participant, inject board prompt, pass `SELF_ID` env var
+  4. `start_agent_container()` changes — pass `SELF_ID` env var
+  5. `FUZZYCLAW_TOOLS` registry — add `message_board`
+  6. Celery `board_relay` task — Redis→DB persistence (runs in existing worker)
+  7. Django views for board API (receive human replies, return message partials)
+  8. Dashboard floating panel (Alpine.js + HTMX)
+  9. Navbar icon + badge count
+  10. WhatsApp channel (separate phase, references nanoclaw)
+
 ## Resolved Decisions
 
 | Question                 | Decision                                                                                                                                                                                                             |
@@ -268,7 +417,8 @@ dispatch_specialist() [host-side, has Django ORM]
 | Skill + agent management | Filesystem only. Drop `.md` files in `agents/`, skill dirs in `skills/`. Dashboard shows read-only view. No admin forms.                                                                                             |
 | Image lifecycle          | Background Celery task watches `agents/` dir, tracks file hashes, builds/rebuilds/deletes images. Decouples slow image builds from fast agent dispatch.                                                              |
 | API auth                 | Django token auth for the agent runtime                                                                                                                                                                              |
-| WhatsApp                 | Defer, but keep infra available                                                                                                                                                                                      |
+| Message Board            | Per-run shared comms channel (Redis Streams + `BoardMessage` model). Agents, coordinator, and human as peers. `message_board` tool in agent frontmatter. Dashboard floating panel + CLI listener. `@name_id` addressing. |
+| WhatsApp                 | Defer as Message Board channel. Reference nanoclaw's implementation (not Twilio).                                                                                                                                     |
 | Scheduling               | Celery Beat with `django-celery-beat` (DatabaseScheduler). Direct LLM call (Gemini Flash) parses NL schedule → cron. Coordinator also has `manage_schedule` tool for programmatic schedule changes. No cron on host. |
 | `manage_schedule` tool   | Coordinator tool (not skill). Wraps `sync_schedule()` to create/update/delete Celery Beat `PeriodicTask` entries. Allows coordinators to adapt briefing frequency based on agent findings.                           |
 | Scraping method          | ScrapingBee API (existing account) — available as a tool/skill, not baked into the platform                                                                                                                          |
@@ -308,8 +458,9 @@ Done:
 
 Still to do:
 
+- **Message Board** — per-run comms channel for agents + human (spec written, ready to build)
 - Stop button (cancel a running run from the UI)
-- WhatsApp channel (notifications + commands)
+- WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
 - Login / logout page styling
 
@@ -318,5 +469,5 @@ Idea:
 - keep specialist container on until the coordinator tells it can go.
   While the specialist is ephemeral, by keeping it on for a while the coordinator
   has an opportunity to use the same agent (and its existing context) to refine stuff.
-
-- We need to have a way to include human in the loop in those runs. This makes the previous comment even more relevant.
+  **Update:** Message Board makes this even more relevant — a waiting agent is a paused
+  container, not a dead one.

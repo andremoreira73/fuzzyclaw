@@ -39,6 +39,9 @@ class AgentRunSerializer(serializers.ModelSerializer):
             'error_message', 'created_at',
         ]
         read_only_fields = ['created_at']
+        # Note: status/report/etc. are kept writable because the coordinator
+        # updates execution state via the API. Queryset scoping ensures users
+        # can only modify their own objects.
 
 
 class RunSerializer(serializers.ModelSerializer):
@@ -52,3 +55,5 @@ class RunSerializer(serializers.ModelSerializer):
             'agent_runs', 'created_at',
         ]
         read_only_fields = ['created_at']
+        # Note: execution fields kept writable for coordinator use.
+        # Queryset scoping prevents cross-user modification.

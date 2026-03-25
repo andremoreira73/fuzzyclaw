@@ -93,12 +93,12 @@ def _resolve_volume_host_path(host_path: str) -> str:
     """Resolve a volume host path from agent frontmatter.
 
     Paths starting with './' are resolved relative to HOST_PROJECT_DIR.
-    These are user-specified host paths and bypass _to_host_path().
+    Uses realpath to resolve symlinks before security validation.
     """
     if host_path.startswith('./') or host_path.startswith('../'):
         host_root = getattr(settings, 'FUZZYCLAW_HOST_PROJECT_DIR', str(settings.BASE_DIR))
-        return os.path.normpath(os.path.join(host_root, host_path))
-    return host_path
+        return os.path.realpath(os.path.join(host_root, host_path))
+    return os.path.realpath(host_path)
 
 
 def _validate_volume_mount(vol: dict) -> None:
@@ -109,9 +109,10 @@ def _validate_volume_mount(vol: dict) -> None:
     host_path = _resolve_volume_host_path(vol['host'])
 
     # Check blocklist (startswith match, but '/' only blocks root exactly)
+    # Resolve blocklist entries too so symlinks match on both sides
     blocklist = getattr(settings, 'FUZZYCLAW_VOLUME_BLOCKLIST', [])
     for blocked in blocklist:
-        blocked_normalized = blocked.rstrip('/')
+        blocked_normalized = os.path.realpath(blocked).rstrip('/')
         if blocked_normalized == '':
             # '/' entry — only block mounting root itself
             if host_path == '/':
@@ -125,11 +126,12 @@ def _validate_volume_mount(vol: dict) -> None:
 
     # Check allowlist — empty means everything allowed (minus blocklist),
     # non-empty means only those paths (minus blocklist).
+    # Resolve allowlist entries too
     allowlist = getattr(settings, 'FUZZYCLAW_VOLUME_ALLOWLIST', [])
     if allowlist:
         allowed = False
         for allow_path in allowlist:
-            allow_normalized = allow_path.rstrip('/')
+            allow_normalized = os.path.realpath(allow_path).rstrip('/')
             if host_path == allow_normalized or host_path.startswith(allow_normalized + '/'):
                 allowed = True
                 break
@@ -143,32 +145,53 @@ def _validate_volume_mount(vol: dict) -> None:
 # Phase A: Image Builder
 # ---------------------------------------------------------------------------
 
+def _hash_base_image_inputs() -> str:
+    """Compute hash of all files baked into the base agent image."""
+    base_dir = settings.BASE_DIR
+    paths = [
+        base_dir / 'Dockerfile.agent',
+        base_dir / 'requirements-agent.txt',
+        base_dir / 'agent_runner.py',
+    ]
+    agent_tools_dir = base_dir / 'agent_tools'
+    if agent_tools_dir.is_dir():
+        for py_file in sorted(agent_tools_dir.rglob('*.py')):
+            paths.append(py_file)
+    existing = [p for p in paths if p.is_file()]
+    if not existing:
+        return 'empty'
+    return compute_file_hash(*existing)
+
+
 def _ensure_base_image(client, force_rebuild=False):
-    """Build the base agent image if it doesn't exist or deps changed."""
+    """Build the base agent image if it doesn't exist or inputs changed."""
     base_tag = f"{settings.FUZZYCLAW_AGENT_IMAGE_PREFIX}-base:latest"
+    current_hash = _hash_base_image_inputs()
 
     if not force_rebuild:
         try:
-            client.images.get(base_tag)
-            logger.info("Base image %s already exists", base_tag)
-            return base_tag
+            image = client.images.get(base_tag)
+            stored_hash = image.labels.get('fuzzyclaw.base_hash', '')
+            if stored_hash == current_hash:
+                logger.info("Base image %s up to date (hash match)", base_tag)
+                return base_tag, False
+            logger.info("Base image %s exists but inputs changed, rebuilding", base_tag)
         except docker.errors.ImageNotFound:
             pass
 
     logger.info("Building base image %s ...", base_tag)
-    # Build context must use container-local paths (SDK reads files locally
-    # then sends tar to daemon). Only volume mounts need host paths.
     image, build_log = client.images.build(
         path=str(settings.BASE_DIR),
         dockerfile=str(settings.BASE_DIR / 'Dockerfile.agent'),
         tag=base_tag,
+        labels={'fuzzyclaw.base_hash': current_hash},
         rm=True,
     )
     for chunk in build_log:
         if 'stream' in chunk:
             logger.debug(chunk['stream'].strip())
     logger.info("Base image %s built successfully", base_tag)
-    return base_tag
+    return base_tag, True
 
 
 def _build_agent_image(client, agent_def: dict, base_tag: str) -> str:
@@ -246,9 +269,12 @@ def sync_agent_images(
 
     client = get_docker_client()
 
-    # Ensure base image exists
+    # Ensure base image exists — returns (tag, was_rebuilt)
     try:
-        base_tag = _ensure_base_image(client, force_rebuild=force_base or force_all)
+        base_tag, base_rebuilt = _ensure_base_image(client, force_rebuild=force_base or force_all)
+        if base_rebuilt and not force_all:
+            logger.info("Base image was rebuilt — forcing rebuild of all agent images")
+            force_all = True
     except Exception as e:
         logger.error("Failed to build base image: %s", e)
         result['errors'].append({'agent': '_base', 'error': str(e)})
@@ -392,6 +418,17 @@ def start_agent_container(
             )
         _container_count += 1
 
+    try:
+        return _start_agent_container_inner(agent_name, task_description, agent_run_id, run_id, agent_image)
+    except Exception:
+        # Roll back the slot on any failure before containers.run succeeds
+        with _container_lock:
+            _container_count = max(0, _container_count - 1)
+        raise
+
+
+def _start_agent_container_inner(agent_name, task_description, agent_run_id, run_id, agent_image):
+    """Inner implementation of start_agent_container after slot acquisition."""
     # Each call gets its own Docker client (thread-safe)
     client = get_docker_client()
 
@@ -418,6 +455,7 @@ def start_agent_container(
         # Message board identity
         'SELF_ID': f"{agent_name}_{agent_run_id}",
         'FUZZYCLAW_HITL_TIMEOUT': str(getattr(settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)),
+        'FUZZYCLAW_AGENT_TIMEOUT': str(getattr(settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)),
     }
 
     # Pass only the needed API key

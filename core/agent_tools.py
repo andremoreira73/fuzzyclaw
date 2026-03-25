@@ -16,6 +16,8 @@ import time
 from django.utils import timezone
 from langchain_core.tools import tool
 
+from .registry import AgentNotFound, get_agent
+
 logger = logging.getLogger(__name__)
 
 
@@ -184,6 +186,7 @@ def check_reports(run_id: int, wait_seconds: int = 30) -> str:
 
     wait_seconds = max(1, min(wait_seconds, 120))
     agent_timeout = getattr(django_settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)
+    hitl_timeout = getattr(django_settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)
 
     # Try Redis Streams first for instant notification
     r = _get_redis_client()
@@ -253,10 +256,11 @@ def check_reports(run_id: int, wait_seconds: int = 30) -> str:
                     'agent_name': ar.agent_name,
                     'status': 'crashed',
                 })
-            elif ar.started_at and (now - ar.started_at).total_seconds() > agent_timeout:
+            elif ar.started_at and (now - ar.started_at).total_seconds() > _effective_timeout(ar, agent_timeout, hitl_timeout):
                 # Timed out — kill the container and finalize
+                effective = _effective_timeout(ar, agent_timeout, hitl_timeout)
                 _kill_timed_out_container(ar)
-                _finalize_agent_run(ar, 'failed', f'Agent timed out after {agent_timeout}s.', now)
+                _finalize_agent_run(ar, 'failed', f'Agent timed out after {effective}s.', now)
                 statuses.append({
                     'agent_run_id': ar.id,
                     'agent_name': ar.agent_name,
@@ -274,6 +278,21 @@ def check_reports(run_id: int, wait_seconds: int = 30) -> str:
         'agents': statuses,
     }
     return json.dumps(result, indent=2)
+
+
+def _effective_timeout(agent_run, agent_timeout: int, hitl_timeout: int) -> int:
+    """Return the effective timeout for an agent run.
+
+    Agents with the 'message_board' tool may be waiting for human input,
+    so they get the longer HITL timeout instead of the standard agent timeout.
+    """
+    try:
+        agent_def = get_agent(agent_run.agent_name)
+        if 'message_board' in agent_def.get('tools', []):
+            return hitl_timeout
+    except AgentNotFound:
+        pass
+    return agent_timeout
 
 
 def _finalize_agent_run(agent_run, status: str, error_msg: str, now):

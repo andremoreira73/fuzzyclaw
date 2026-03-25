@@ -133,99 +133,104 @@ def main():
     task_description = os.environ.get('TASK_DESCRIPTION', '')
     comms_dir = os.environ.get('COMMS_DIR', '/app/comms')
 
-    if not task_description:
-        logger.error("TASK_DESCRIPTION env var is required")
-        sys.exit(1)
-
-    logger.info("Starting agent from %s", agent_file)
-    agent_def = parse_agent_file(agent_file)
-    logger.info("Agent: %s (model: %s)", agent_def['name'], agent_def['model_choice'])
-
-    model = get_model(agent_def['model_choice'])
-    tools = build_tools(agent_def['tools'])
-
-    # Optional persistent memory (PostgresStore context manager)
-    store_ctx = None
-    if agent_def['memory']:
-        store_ctx = get_memory_store(agent_def['name'])
-
-    # Optional message board (Redis-backed)
+    # All startup work is inside this outer try so that parse failures,
+    # model init errors, and tool-build exceptions produce structured
+    # error.json files instead of silent crashes.
+    agent_name = 'unknown'
+    board_redis = None
     self_id = os.environ.get('SELF_ID', '')
     run_id = os.environ.get('RUN_ID', '')
-    has_message_board = 'message_board' in agent_def['tools']
-    board_redis = None
 
-    if has_message_board and self_id and run_id:
-        try:
-            from agent_tools.message_board import get_board_redis
-            board_redis = get_board_redis()
-            if board_redis:
-                participants_key = f"fuzzyclaw:board:{run_id}:participants"
-                board_redis.sadd(participants_key, self_id)
-                logger.info("Registered as board participant: %s", self_id)
-        except Exception as e:
-            logger.warning("Message board registration failed: %s", e)
-            board_redis = None
+    try:
+        if not task_description:
+            raise ValueError("TASK_DESCRIPTION env var is required")
 
-    system_prompt = f"""You are a FuzzyClaw specialist agent: {agent_def['name']}
+        logger.info("Starting agent from %s", agent_file)
+        agent_def = parse_agent_file(agent_file)
+        agent_name = agent_def['name']
+        logger.info("Agent: %s (model: %s)", agent_name, agent_def['model_choice'])
+
+        model = get_model(agent_def['model_choice'])
+        tools = build_tools(agent_def['tools'])
+
+        # Optional persistent memory (PostgresStore context manager)
+        store_ctx = None
+        if agent_def['memory']:
+            store_ctx = get_memory_store(agent_def['name'])
+
+        # Optional message board (Redis-backed)
+        has_message_board = 'message_board' in agent_def['tools']
+
+        if has_message_board and self_id and run_id:
+            try:
+                from agent_tools.message_board import get_board_redis
+                board_redis = get_board_redis()
+                if board_redis:
+                    participants_key = f"fuzzyclaw:board:{run_id}:participants"
+                    board_redis.sadd(participants_key, self_id)
+                    logger.info("Registered as board participant: %s", self_id)
+            except Exception as e:
+                logger.warning("Message board registration failed: %s", e)
+                board_redis = None
+
+        system_prompt = f"""You are a FuzzyClaw specialist agent: {agent_def['name']}
 
 {agent_def['prompt']}
 
 You have access to tools as configured. Use them to get real work done.
 Complete the task given to you and return a clear, structured report of your findings."""
 
-    # Append mounted volumes info to system prompt
-    agent_volumes_raw = os.environ.get('AGENT_VOLUMES', '')
-    if agent_volumes_raw:
-        try:
-            agent_volumes = json.loads(agent_volumes_raw)
-            if agent_volumes:
-                vol_lines = []
-                for vol in agent_volumes:
-                    mode_label = 'read-only' if vol['mode'] == 'ro' else 'read-write'
-                    vol_lines.append(f"- {vol['mount']} ({mode_label})")
-                system_prompt += "\n\n## Mounted Volumes\n" + "\n".join(vol_lines)
-                system_prompt += "\nUse bash to interact with files in these directories."
-        except (json.JSONDecodeError, KeyError):
-            logger.warning("Failed to parse AGENT_VOLUMES env var")
+        # Append mounted volumes info to system prompt
+        agent_volumes_raw = os.environ.get('AGENT_VOLUMES', '')
+        if agent_volumes_raw:
+            try:
+                agent_volumes = json.loads(agent_volumes_raw)
+                if agent_volumes:
+                    vol_lines = []
+                    for vol in agent_volumes:
+                        mode_label = 'read-only' if vol['mode'] == 'ro' else 'read-write'
+                        vol_lines.append(f"- {vol['mount']} ({mode_label})")
+                    system_prompt += "\n\n## Mounted Volumes\n" + "\n".join(vol_lines)
+                    system_prompt += "\nUse bash to interact with files in these directories."
+            except (json.JSONDecodeError, KeyError):
+                logger.warning("Failed to parse AGENT_VOLUMES env var")
 
-    # Append message board context to system prompt
-    if has_message_board and self_id:
-        system_prompt += f"""
+        # Append message board context to system prompt
+        if has_message_board and self_id:
+            system_prompt += f"""
 
 ## Message Board
 You are `{self_id}` on this run's message board. You have tools to send messages to the human operator and to other agents, and to wait for their replies. This is how you interact with the human — use your message board tools whenever the task requires human input, feedback, or a conversation. When you send a message to the human, always wait for their actual response before proceeding. Never assume or fabricate what the human said."""
 
-    def run_agent(store=None):
-        agent_tools = list(tools)
-        if store is not None:
-            memory_tools = build_memory_tools(store, agent_def['name'])
-            agent_tools.extend(memory_tools)
-            logger.info("Memory tools enabled: remember, recall, recall_all")
+        def run_agent(store=None):
+            agent_tools = list(tools)
+            if store is not None:
+                memory_tools = build_memory_tools(store, agent_def['name'])
+                agent_tools.extend(memory_tools)
+                logger.info("Memory tools enabled: remember, recall, recall_all")
 
-        if board_redis is not None:
-            from agent_tools.message_board import build_message_board_tools
-            board_tools = build_message_board_tools(board_redis, self_id, run_id)
-            agent_tools.extend(board_tools)
-            logger.info("Message board tools enabled: post_message, read_messages, list_participants, ask_human")
+            if board_redis is not None:
+                from agent_tools.message_board import build_message_board_tools
+                board_tools = build_message_board_tools(board_redis, self_id, run_id)
+                agent_tools.extend(board_tools)
+                logger.info("Message board tools enabled: post_message, read_messages, list_participants, ask_human")
 
-        # All agents get access to all skills via the mounted /app/skills directory
-        agent_kwargs = dict(
-            model=model,
-            tools=agent_tools,
-            system_prompt=system_prompt,
-            backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
-            skills=['/skills'],
-        )
+            # All agents get access to all skills via the mounted /app/skills directory
+            agent_kwargs = dict(
+                model=model,
+                tools=agent_tools,
+                system_prompt=system_prompt,
+                backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
+                skills=['/skills'],
+            )
 
-        agent = create_deep_agent(**agent_kwargs)
+            agent = create_deep_agent(**agent_kwargs)
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content=task_description)]},
-        )
-        return result["messages"][-1].content
+            result = agent.invoke(
+                {"messages": [HumanMessage(content=task_description)]},
+            )
+            return result["messages"][-1].content
 
-    try:
         if store_ctx is not None:
             with store_ctx as store:
                 store.setup()
@@ -234,7 +239,7 @@ You are `{self_id}` on this run's message board. You have tools to send messages
             report_text = run_agent()
 
         report = {
-            'agent_name': agent_def['name'],
+            'agent_name': agent_name,
             'status': 'completed',
             'report': report_text,
         }
@@ -246,17 +251,23 @@ You are `{self_id}` on this run's message board. You have tools to send messages
         signal_completion('completed')
         sys.exit(0)
 
+    except SystemExit:
+        raise  # Don't catch sys.exit(0) from the success path
+
     except Exception as e:
         logger.error("Agent failed: %s", e)
         error = {
-            'agent_name': agent_def['name'],
+            'agent_name': agent_name,
             'status': 'failed',
             'error': str(e),
             'traceback': traceback.format_exc(),
         }
         error_path = os.path.join(comms_dir, 'error.json')
-        with open(error_path, 'w', encoding='utf-8') as f:
-            json.dump(error, f, indent=2)
+        try:
+            with open(error_path, 'w', encoding='utf-8') as f:
+                json.dump(error, f, indent=2)
+        except Exception:
+            logger.error("Could not write error.json to %s", error_path)
 
         signal_completion('failed')
         sys.exit(1)

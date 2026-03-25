@@ -340,7 +340,7 @@ def board_messages(request, run_pk):
     try:
         r = _get_board_redis()
         stream_key = f"fuzzyclaw:board:{run.id}"
-        entries = r.xrange(stream_key, count=200)
+        entries = list(reversed(r.xrevrange(stream_key, count=200)))
 
         for entry_id, data in entries:
             sender = data.get('from', '')
@@ -391,7 +391,10 @@ def board_reply(request, run_pk):
     if raw_message.startswith('@'):
         parts = raw_message.split(' ', 1)
         recipient = parts[0][1:]  # strip the @
-        content = parts[1] if len(parts) >= 2 else ''
+        content = parts[1].strip() if len(parts) >= 2 else ''
+
+    if not content:
+        return HttpResponse(status=400)
 
     try:
         r = _get_board_redis()
@@ -404,6 +407,10 @@ def board_reply(request, run_pk):
         })
     except Exception as e:
         logger.warning("board_reply: Redis write failed: %s", e)
+        return HttpResponse(
+            '<div class="text-red-600 text-sm p-2">Failed to send message. Please try again.</div>',
+            status=502,
+        )
 
     # Return updated messages partial
     return board_messages(request, run_pk)

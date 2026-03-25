@@ -28,6 +28,7 @@
           filterMode: 'all',
           pendingCount: 0,
           messageInput: '',
+          sendError: '',
           showAutocomplete: false,
           // Drag state
           isDragging: false,
@@ -77,6 +78,7 @@
           onPanelOpen() {
             this.loadRuns();
             this._runsInterval = setInterval(() => this.loadRuns(), 10000);
+            if (this.currentRunId) this.startFeedPolling();
           },
 
           onPanelClose() {
@@ -219,8 +221,20 @@
               if (r.ok) {
                 this.messageInput = '';
                 this.loadFeed();
+                this.sendError = '';
+              } else {
+                r.text().then(body => {
+                  // Strip HTML tags — display as plain text to avoid injection
+                  const tmp = document.createElement('div');
+                  tmp.innerHTML = body;
+                  this.sendError = tmp.textContent || 'Failed to send message.';
+                  setTimeout(() => { this.sendError = ''; }, 5000);
+                });
               }
-            }).catch(() => {});
+            }).catch(() => {
+              this.sendError = 'Network error. Please try again.';
+              setTimeout(() => { this.sendError = ''; }, 5000);
+            });
           },
         }));
       });

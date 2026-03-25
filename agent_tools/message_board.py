@@ -32,9 +32,13 @@ def get_board_redis():
         return None
 
     import redis
-    r = redis.from_url(redis_url, decode_responses=True)
-    r.ping()
-    return r
+    try:
+        r = redis.from_url(redis_url, decode_responses=True)
+        r.ping()
+        return r
+    except Exception as e:
+        logger.warning("Message board: Redis unavailable: %s", e)
+        return None
 
 
 def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
@@ -51,10 +55,14 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
     """
     stream_key = f"fuzzyclaw:board:{run_id}"
     participants_key = f"fuzzyclaw:board:{run_id}:participants"
+    # Use HITL timeout as max_wait — the coordinator extends this agent's
+    # lifetime to match when message_board is in the tools list.
     max_wait = int(os.environ.get('FUZZYCLAW_HITL_TIMEOUT', '1800'))
 
     # Track read position across calls within this agent's lifetime
     last_seen_id = '0-0'
+    # Buffer for messages skipped by ask_human() (non-human sender)
+    _pending_messages = []
 
     @tool
     def post_message(to: str, message: str) -> str:
@@ -89,10 +97,18 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                           return immediately, max 1800). Use 1800 when waiting
                           for a human reply.
         """
-        nonlocal last_seen_id
+        nonlocal last_seen_id, _pending_messages
         wait_seconds = max(0, min(wait_seconds, max_wait))
 
-        messages = []
+        # Drain any messages buffered by ask_human() first
+        messages = list(_pending_messages)
+        _pending_messages = []
+
+        # If we already have buffered messages, return them immediately
+        if messages:
+            logger.info("Board: %s returning %d buffered message(s)", self_id, len(messages))
+            return json.dumps(messages)
+
         deadline = time.time() + wait_seconds
 
         while True:
@@ -122,6 +138,9 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
 
                 if messages:
                     break  # Got messages addressed to us
+                elif streams:
+                    # Stream has traffic but nothing for us — brief backoff
+                    time.sleep(0.1)
 
             if time.time() >= deadline:
                 break
@@ -165,8 +184,8 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
         })
         logger.info("Board: %s asks human: %s", self_id, question[:100])
 
-        # Block waiting for response
-        nonlocal last_seen_id
+        # Block waiting for response — buffer non-human messages for read_messages()
+        nonlocal last_seen_id, _pending_messages
         deadline = time.time() + max_wait
 
         while time.time() < deadline:
@@ -186,10 +205,19 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                     last_seen_id = entry_id
                     recipient = data.get('to', '')
                     sender = data.get('from', '')
-                    if (recipient == self_id or recipient == 'all') and sender == 'human':
+                    is_for_us = recipient == self_id or recipient == 'all'
+                    if is_for_us and sender == 'human':
                         response = data.get('content', '')
                         logger.info("Board: %s got human response: %s", self_id, response[:100])
                         return response
+                    elif is_for_us:
+                        # Buffer non-human messages so read_messages() can return them later
+                        _pending_messages.append({
+                            'from': sender,
+                            'to': recipient,
+                            'content': data.get('content', ''),
+                            'ts': data.get('ts', ''),
+                        })
 
         logger.info("Board: %s ask_human timed out", self_id)
         return ""

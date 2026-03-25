@@ -676,7 +676,12 @@ class SyncAgentImagesTests(TestCase):
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        mock_client.images.get.return_value = MagicMock()  # base exists
+        # Base image exists with matching hash label so it won't rebuild
+        from .containers import _hash_base_image_inputs
+        base_hash = _hash_base_image_inputs()
+        mock_base_image = MagicMock()
+        mock_base_image.labels = {'fuzzyclaw.base_hash': base_hash}
+        mock_client.images.get.return_value = mock_base_image
 
         result = sync_agent_images(self.agents_dir)
 
@@ -696,7 +701,11 @@ class SyncAgentImagesTests(TestCase):
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        mock_client.images.get.return_value = MagicMock()  # base exists
+        from .containers import _hash_base_image_inputs
+        base_hash = _hash_base_image_inputs()
+        mock_base_image = MagicMock()
+        mock_base_image.labels = {'fuzzyclaw.base_hash': base_hash}
+        mock_client.images.get.return_value = mock_base_image
         mock_client.images.build.return_value = (MagicMock(), [])
 
         result = sync_agent_images(self.agents_dir)
@@ -852,6 +861,45 @@ class StartAgentContainerTests(TestCase):
         self.assertIn('REDIS_URL', env_arg)
         self.assertEqual(env_arg['RUN_ID'], str(self.run.id))
         self.assertEqual(env_arg['AGENT_RUN_ID'], str(self.agent_run.id))
+
+
+    @patch('core.containers.get_docker_client')
+    def test_container_count_rolls_back_on_docker_failure(self, mock_get_client):
+        """Container slot must be released if containers.run fails."""
+        import core.containers as containers_mod
+        from .containers import start_agent_container
+
+        mock_get_client.side_effect = Exception("Docker daemon unreachable")
+        containers_mod._container_count = 0
+
+        with self.assertRaises(Exception):
+            start_agent_container('test-agent', 'fail test', self.agent_run.id, self.run.id)
+
+        self.assertEqual(containers_mod._container_count, 0)
+
+    @patch('core.containers.get_docker_client')
+    def test_container_count_rolls_back_on_volume_validation_failure(self, mock_get_client):
+        """Container slot must be released if volume validation fails."""
+        import core.containers as containers_mod
+        from .containers import start_agent_container
+
+        mock_client = MagicMock()
+        mock_get_client.return_value = mock_client
+        containers_mod._container_count = 0
+
+        # Use an agent with a blocked volume mount
+        with self.settings(FUZZYCLAW_VOLUME_BLOCKLIST=['/etc']):
+            with patch('core.containers.get_agent') as mock_agent:
+                mock_agent.return_value = {
+                    'name': 'test-agent',
+                    'model_choice': 'gpt-5-mini',
+                    'tools': [],
+                    'volumes': [{'host': '/etc/shadow', 'mount': '/data', 'mode': 'ro'}],
+                }
+                with self.assertRaises(RuntimeError):
+                    start_agent_container('test-agent', 'vol fail', self.agent_run.id, self.run.id)
+
+        self.assertEqual(containers_mod._container_count, 0)
 
 
 class DispatchSpecialistTests(TestCase):
@@ -1170,6 +1218,42 @@ class VolumeSecurityTests(TestCase):
         from .containers import _resolve_volume_host_path
         resolved = _resolve_volume_host_path('/home/user/other')
         self.assertEqual(resolved, '/home/user/other')
+
+    def test_symlink_to_blocked_path_rejected(self):
+        """Symlink that resolves to a blocked path must be caught."""
+        from .containers import _resolve_volume_host_path, _validate_volume_mount
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = Path(tmpdir) / 'sneaky_link'
+            link_path.symlink_to('/etc')
+
+            with self.settings(
+                FUZZYCLAW_HOST_PROJECT_DIR=tmpdir,
+                FUZZYCLAW_VOLUME_ALLOWLIST=[tmpdir],
+                FUZZYCLAW_VOLUME_BLOCKLIST=['/etc'],
+            ):
+                resolved = _resolve_volume_host_path(str(link_path))
+                self.assertEqual(resolved, '/etc')
+
+                with self.assertRaises(RuntimeError) as ctx:
+                    _validate_volume_mount({'host': str(link_path), 'mount': '/data', 'mode': 'ro'})
+                self.assertIn('blocklist', str(ctx.exception))
+
+    def test_relative_symlink_to_blocked_path_rejected(self):
+        """Relative symlink traversal into a blocked path must be caught."""
+        from .containers import _validate_volume_mount
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            link_path = Path(tmpdir) / 'etc_link'
+            link_path.symlink_to('/etc')
+
+            with self.settings(
+                FUZZYCLAW_HOST_PROJECT_DIR=tmpdir,
+                FUZZYCLAW_VOLUME_ALLOWLIST=[tmpdir],
+                FUZZYCLAW_VOLUME_BLOCKLIST=['/etc'],
+            ):
+                with self.assertRaises(RuntimeError):
+                    _validate_volume_mount({'host': f'{tmpdir}/etc_link', 'mount': '/data', 'mode': 'ro'})
 
 
 class VolumeLaunchTests(TestCase):
@@ -1609,6 +1693,55 @@ class CheckReportsToolTests(TestCase):
         self.assertEqual(agent_run.status, 'failed')
         self.assertIn('timed out', agent_run.error_message)
 
+    @patch('core.agent_tools.get_agent')
+    @patch('core.containers._get_redis_client')
+    @patch('core.containers.get_container_status')
+    def test_check_reports_hitl_agent_gets_longer_timeout(self, mock_status, mock_redis, mock_get_agent):
+        """Agents with message_board tool use HITL timeout, not agent timeout."""
+        import json
+        from .agent_tools import check_reports
+
+        mock_redis.return_value = None
+        mock_status.return_value = 'running'
+        mock_get_agent.return_value = {'name': 'test-agent', 'tools': ['message_board']}
+
+        # Agent has been running 700s — beyond agent timeout (600) but within HITL (1800)
+        AgentRun.objects.create(
+            run=self.run, agent_name='test-agent', status='running',
+            started_at=timezone.now() - timezone.timedelta(seconds=700),
+        )
+
+        with self.settings(FUZZYCLAW_AGENT_TIMEOUT=600, FUZZYCLAW_HITL_TIMEOUT=1800):
+            result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        data = json.loads(result)
+
+        # Should still be running — HITL timeout gives it 1800s
+        self.assertEqual(data['agents'][0]['status'], 'running')
+
+    @patch('core.agent_tools.get_agent')
+    @patch('core.containers._get_redis_client')
+    @patch('core.containers.get_container_status')
+    def test_check_reports_non_hitl_agent_times_out_normally(self, mock_status, mock_redis, mock_get_agent):
+        """Agents without message_board use the standard agent timeout."""
+        import json
+        from .agent_tools import check_reports
+
+        mock_redis.return_value = None
+        mock_status.return_value = 'running'
+        mock_get_agent.return_value = {'name': 'test-agent', 'tools': ['web_search']}
+
+        AgentRun.objects.create(
+            run=self.run, agent_name='test-agent', status='running',
+            started_at=timezone.now() - timezone.timedelta(seconds=700),
+        )
+
+        with self.settings(FUZZYCLAW_AGENT_TIMEOUT=600, FUZZYCLAW_HITL_TIMEOUT=1800):
+            result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        data = json.loads(result)
+
+        # Should be timed out — 700s > 600s agent timeout
+        self.assertEqual(data['agents'][0]['status'], 'timed_out')
+
     @patch('core.containers._get_redis_client')
     @patch('core.containers.get_container_status')
     def test_check_reports_excludes_already_finalized(self, mock_status, mock_redis):
@@ -1993,7 +2126,7 @@ class BoardViewTests(TestCase):
     @patch('core.views._get_board_redis')
     def test_board_messages_empty(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.xrange.return_value = []
+        mock_r.xrevrange.return_value = []
         mock_get_redis.return_value = mock_r
 
         resp = self.client.get(f'/runs/{self.run.pk}/board/')
@@ -2003,9 +2136,9 @@ class BoardViewTests(TestCase):
     @patch('core.views._get_board_redis')
     def test_board_messages_shows_messages(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.xrange.return_value = [
-            ('1-0', {'from': 'agent_1', 'to': 'human', 'content': 'Hello?', 'ts': '2026-03-25T10:00:00+00:00'}),
+        mock_r.xrevrange.return_value = [
             ('2-0', {'from': 'human', 'to': 'agent_1', 'content': 'Hi!', 'ts': '2026-03-25T10:01:00+00:00'}),
+            ('1-0', {'from': 'agent_1', 'to': 'human', 'content': 'Hello?', 'ts': '2026-03-25T10:00:00+00:00'}),
         ]
         mock_get_redis.return_value = mock_r
 
@@ -2017,9 +2150,9 @@ class BoardViewTests(TestCase):
     @patch('core.views._get_board_redis')
     def test_board_messages_filter_human(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.xrange.return_value = [
-            ('1-0', {'from': 'agent_1', 'to': 'all', 'content': 'broadcast', 'ts': '2026-03-25T10:00:00+00:00'}),
+        mock_r.xrevrange.return_value = [
             ('2-0', {'from': 'agent_1', 'to': 'human', 'content': 'question', 'ts': '2026-03-25T10:01:00+00:00'}),
+            ('1-0', {'from': 'agent_1', 'to': 'all', 'content': 'broadcast', 'ts': '2026-03-25T10:00:00+00:00'}),
         ]
         mock_get_redis.return_value = mock_r
 
@@ -2041,7 +2174,7 @@ class BoardViewTests(TestCase):
     def test_board_reply_posts_to_redis(self, mock_get_redis):
         mock_r = self._mock_redis()
         # Return empty for the subsequent board_messages call
-        mock_r.xrange.return_value = []
+        mock_r.xrevrange.return_value = []
         mock_get_redis.return_value = mock_r
 
         resp = self.client.post(
@@ -2062,7 +2195,7 @@ class BoardViewTests(TestCase):
     @patch('core.views._get_board_redis')
     def test_board_reply_defaults_to_all(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.xrange.return_value = []
+        mock_r.xrevrange.return_value = []
         mock_get_redis.return_value = mock_r
 
         resp = self.client.post(
@@ -2080,6 +2213,28 @@ class BoardViewTests(TestCase):
             {'message': ''},
         )
         self.assertEqual(resp.status_code, 400)
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_mention_only_returns_400(self, mock_get_redis):
+        """@agent_1 with no message body should be rejected."""
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': '@agent_1'},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_redis_failure_returns_502(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xadd.side_effect = Exception("Redis connection lost")
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': '@agent_1 hello'},
+        )
+        self.assertEqual(resp.status_code, 502)
+        self.assertContains(resp, 'Failed to send message', status_code=502)
 
     @patch('core.views._get_board_redis')
     def test_board_badge_counts_active_runs(self, mock_get_redis):
@@ -2155,3 +2310,142 @@ class BoardViewTests(TestCase):
         for url in urls:
             resp = self.client.get(url)
             self.assertIn(resp.status_code, [302, 405], msg=f"{url} should redirect or deny")
+
+
+class MarkdownSanitizationTests(TestCase):
+    """Regression tests: markdown rendering must strip dangerous HTML."""
+
+    def test_script_tag_stripped(self):
+        from .templatetags.markdown_extras import render_markdown
+        result = render_markdown("<script>alert('xss')</script>Hello")
+        self.assertNotIn('<script>', result)
+        self.assertIn('Hello', result)
+
+    def test_event_handler_stripped(self):
+        from .templatetags.markdown_extras import render_markdown
+        result = render_markdown('<img src=x onerror="alert(1)">')
+        self.assertNotIn('onerror', result)
+
+    def test_normal_markdown_renders(self):
+        from .templatetags.markdown_extras import render_markdown
+        result = render_markdown("# Hello\n\n**bold** text")
+        self.assertIn('<h1>', result)
+        self.assertIn('<strong>', result)
+
+    def test_link_preserved(self):
+        from .templatetags.markdown_extras import render_markdown
+        result = render_markdown("[link](https://example.com)")
+        self.assertIn('href="https://example.com"', result)
+
+    def test_javascript_href_stripped(self):
+        from .templatetags.markdown_extras import render_markdown
+        result = render_markdown('<a href="javascript:alert(1)">click</a>')
+        self.assertNotIn('javascript:', result)
+
+    def test_empty_input(self):
+        from .templatetags.markdown_extras import render_markdown
+        self.assertEqual(render_markdown(''), '')
+        self.assertEqual(render_markdown(None), '')
+
+
+class APIIsolationTests(TestCase):
+    """Regression tests: users must not access other users' data via the API."""
+
+    def setUp(self):
+        self.user_a = User.objects.create_user('alice', password='pass')
+        self.user_b = User.objects.create_user('bob', password='pass')
+        self.token_a = Token.objects.create(user=self.user_a)
+        self.token_b = Token.objects.create(user=self.user_b)
+
+        self.client_a = APIClient()
+        self.client_a.credentials(HTTP_AUTHORIZATION=f'Token {self.token_a.key}')
+        self.client_b = APIClient()
+        self.client_b.credentials(HTTP_AUTHORIZATION=f'Token {self.token_b.key}')
+
+        self.briefing_a = Briefing.objects.create(owner=self.user_a, title='A brief', content='a')
+        self.briefing_b = Briefing.objects.create(owner=self.user_b, title='B brief', content='b')
+        self.run_a = Run.objects.create(briefing=self.briefing_a, status='completed')
+        self.run_b = Run.objects.create(briefing=self.briefing_b, status='completed')
+        self.ar_a = AgentRun.objects.create(run=self.run_a, agent_name='agent-a', status='completed')
+        self.ar_b = AgentRun.objects.create(run=self.run_b, agent_name='agent-b', status='completed')
+
+    def test_user_cannot_list_other_users_briefings(self):
+        resp = self.client_a.get('/api/briefings/')
+        self.assertEqual(resp.status_code, 200)
+        ids = [b['id'] for b in resp.data['results']]
+        self.assertIn(self.briefing_a.id, ids)
+        self.assertNotIn(self.briefing_b.id, ids)
+
+    def test_user_cannot_retrieve_other_users_briefing(self):
+        resp = self.client_a.get(f'/api/briefings/{self.briefing_b.id}/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_cannot_update_other_users_briefing(self):
+        resp = self.client_a.patch(f'/api/briefings/{self.briefing_b.id}/', {'title': 'hacked'})
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_cannot_delete_other_users_briefing(self):
+        resp = self.client_a.delete(f'/api/briefings/{self.briefing_b.id}/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_cannot_list_other_users_runs(self):
+        resp = self.client_a.get('/api/runs/')
+        ids = [r['id'] for r in resp.data['results']]
+        self.assertIn(self.run_a.id, ids)
+        self.assertNotIn(self.run_b.id, ids)
+
+    def test_user_cannot_retrieve_other_users_run(self):
+        resp = self.client_a.get(f'/api/runs/{self.run_b.id}/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_cannot_list_other_users_agent_runs(self):
+        resp = self.client_a.get('/api/agent-runs/')
+        ids = [ar['id'] for ar in resp.data['results']]
+        self.assertIn(self.ar_a.id, ids)
+        self.assertNotIn(self.ar_b.id, ids)
+
+    def test_user_cannot_retrieve_other_users_agent_run(self):
+        resp = self.client_a.get(f'/api/agent-runs/{self.ar_b.id}/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_pending_runs_only_returns_own(self):
+        self.run_a.status = 'pending'
+        self.run_a.save()
+        self.run_b.status = 'pending'
+        self.run_b.save()
+        resp = self.client_a.get('/api/runs/pending/')
+        ids = [r['id'] for r in resp.data]
+        self.assertIn(self.run_a.id, ids)
+        self.assertNotIn(self.run_b.id, ids)
+
+    def test_user_cannot_create_run_on_other_users_briefing(self):
+        resp = self.client_a.post('/api/runs/', {
+            'briefing': self.briefing_b.id,
+            'status': 'pending',
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('briefing', resp.data)
+
+    def test_user_cannot_create_agent_run_on_other_users_run(self):
+        resp = self.client_a.post('/api/agent-runs/', {
+            'run': self.run_b.id,
+            'agent_name': 'test-agent',
+            'status': 'pending',
+        })
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('run', resp.data)
+
+    def test_user_can_create_run_on_own_briefing(self):
+        resp = self.client_a.post('/api/runs/', {
+            'briefing': self.briefing_a.id,
+            'status': 'pending',
+        })
+        self.assertEqual(resp.status_code, 201)
+
+    def test_user_can_create_agent_run_on_own_run(self):
+        resp = self.client_a.post('/api/agent-runs/', {
+            'run': self.run_a.id,
+            'agent_name': 'test-agent',
+            'status': 'pending',
+        })
+        self.assertEqual(resp.status_code, 201)

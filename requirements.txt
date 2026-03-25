@@ -38,4 +38,5 @@ docker>=7.0
 # Utilities
 python-dotenv==1.0.1
 markdown2==2.5.3
+bleach>=6.0
 PyYAML>=6.0

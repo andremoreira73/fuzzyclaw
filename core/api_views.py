@@ -1,3 +1,4 @@
+from rest_framework import serializers as drf_serializers
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -57,35 +58,80 @@ class SkillDetailView(APIView):
 
 
 class BriefingViewSet(viewsets.ModelViewSet):
-    """CRUD for briefings."""
-    queryset = Briefing.objects.all()
+    """CRUD for briefings. Scoped to the authenticated user."""
     serializer_class = BriefingSerializer
     search_fields = ['title', 'content']
-    filterset_fields = ['owner', 'is_active']
+    filterset_fields = ['is_active']
     ordering_fields = ['created_at', 'updated_at', 'title']
+
+    def get_queryset(self):
+        return Briefing.objects.filter(owner=self.request.user)
 
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
 
 class RunViewSet(viewsets.ModelViewSet):
-    """Full CRUD for runs. Coordinator creates/updates runs as it executes."""
-    queryset = Run.objects.select_related('briefing').prefetch_related('agent_runs')
+    """Full CRUD for runs. Scoped to the authenticated user's briefings."""
     serializer_class = RunSerializer
     filterset_fields = ['briefing', 'status', 'triggered_by']
     ordering_fields = ['created_at', 'started_at', 'completed_at']
 
+    def get_queryset(self):
+        return (
+            Run.objects.filter(briefing__owner=self.request.user)
+            .select_related('briefing')
+            .prefetch_related('agent_runs')
+        )
+
+    def perform_create(self, serializer):
+        briefing = serializer.validated_data.get('briefing')
+        if briefing and briefing.owner != self.request.user:
+            raise drf_serializers.ValidationError(
+                {'briefing': 'You do not own this briefing.'}
+            )
+        serializer.save()
+
+    def perform_update(self, serializer):
+        briefing = serializer.validated_data.get('briefing')
+        if briefing and briefing.owner != self.request.user:
+            raise drf_serializers.ValidationError(
+                {'briefing': 'You do not own this briefing.'}
+            )
+        serializer.save()
+
     @action(detail=False, methods=['get'])
     def pending(self, request):
         """Get all pending runs (for the coordinator to pick up)."""
-        pending = self.queryset.filter(status='pending')
+        pending = self.get_queryset().filter(status='pending')
         serializer = self.get_serializer(pending, many=True)
         return Response(serializer.data)
 
 
 class AgentRunViewSet(viewsets.ModelViewSet):
-    """CRUD for agent runs. Coordinator creates these when dispatching specialists."""
-    queryset = AgentRun.objects.select_related('run')
+    """CRUD for agent runs. Scoped to the authenticated user's runs."""
     serializer_class = AgentRunSerializer
     filterset_fields = ['run', 'agent_name', 'status']
     ordering_fields = ['created_at', 'started_at', 'completed_at']
+
+    def get_queryset(self):
+        return (
+            AgentRun.objects.filter(run__briefing__owner=self.request.user)
+            .select_related('run')
+        )
+
+    def perform_create(self, serializer):
+        run = serializer.validated_data.get('run')
+        if run and run.briefing.owner != self.request.user:
+            raise drf_serializers.ValidationError(
+                {'run': 'You do not own this run.'}
+            )
+        serializer.save()
+
+    def perform_update(self, serializer):
+        run = serializer.validated_data.get('run')
+        if run and run.briefing.owner != self.request.user:
+            raise drf_serializers.ValidationError(
+                {'run': 'You do not own this run.'}
+            )
+        serializer.save()

@@ -158,7 +158,7 @@ The coordinator updates `status`, `report`, `container_id`, etc. on Runs and Age
 Still to do:
 
 - ~~Code review fixes~~ — completed (3 rounds, 170 tests passing)
-- Message Board — stabilize (messaging fixes landed, needs browser testing)
+- Message Board — stabilize (code review fixes landed, 170 tests pass, but agent still not delivering messages to board in browser testing 2026-03-25 — needs deeper investigation)
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)

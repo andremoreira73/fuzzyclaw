@@ -1,0 +1,108 @@
+{% comment %}
+Message Board — floating, draggable panel.
+Included in base.html for authenticated users.
+Alpine.js component (boardPanel) registered in base.html <head>.
+{% endcomment %}
+
+<div id="board-panel-root"
+     x-data="boardPanel" x-cloak
+     @keydown.escape.window="$store.board.open = false"
+     @mousemove.window="onDrag($event)"
+     @mouseup.window="stopDrag()">
+
+  {# ── Floating Panel ── #}
+  <div x-show="$store.board.open"
+       x-transition:enter="transition ease-out duration-200"
+       x-transition:enter-start="opacity-0 scale-95"
+       x-transition:enter-end="opacity-100 scale-100"
+       x-transition:leave="transition ease-in duration-150"
+       x-transition:leave-start="opacity-100 scale-100"
+       x-transition:leave-end="opacity-0 scale-95"
+       :style="panelStyle"
+       class="fixed z-50 w-[400px] bg-white rounded-xl shadow-2xl border border-gray-200 flex flex-col"
+       style="max-height: 60vh;">
+
+    {# ── Header (draggable) ── #}
+    <div class="flex items-center justify-between px-4 py-3 bg-gray-900 rounded-t-xl cursor-move select-none"
+         @mousedown="startDrag($event)">
+      <div class="flex items-center space-x-2">
+        <i class="fas fa-clipboard-list text-green-400 text-sm"></i>
+        <span class="text-sm font-semibold text-gray-100">Message Board</span>
+      </div>
+
+      {# Run selector #}
+      <div class="flex items-center space-x-1" @mousedown.stop>
+        <button @click="prevRun()" class="text-gray-400 hover:text-white px-1 text-xs">
+          <i class="fas fa-chevron-left"></i>
+        </button>
+        <select id="board-run-select"
+                @change="onRunChange($event)"
+                class="bg-gray-800 text-gray-300 text-xs rounded px-2 py-1 border border-gray-700 max-w-[160px]">
+          <option value="" disabled selected>No active runs</option>
+        </select>
+        <button @click="nextRun()" class="text-gray-400 hover:text-white px-1 text-xs">
+          <i class="fas fa-chevron-right"></i>
+        </button>
+      </div>
+
+      {# Close button #}
+      <button @click="$store.board.open = false" @mousedown.stop
+              class="text-gray-400 hover:text-white transition-colors">
+        <i class="fas fa-times"></i>
+      </button>
+    </div>
+
+    {# ── Filter tabs ── #}
+    <div class="flex border-b border-gray-200 px-4 bg-gray-50">
+      <button @click="filterMode = 'all'; startFeedPolling()"
+              :class="filterMode === 'all' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+              class="px-3 py-2 text-xs font-medium border-b-2 transition-colors">
+        All
+      </button>
+      <button @click="filterMode = 'human'; startFeedPolling()"
+              :class="filterMode === 'human' ? 'border-indigo-500 text-indigo-600' : 'border-transparent text-gray-500 hover:text-gray-700'"
+              class="px-3 py-2 text-xs font-medium border-b-2 transition-colors">
+        To me
+        <template x-if="pendingCount > 0">
+          <span class="ml-1 bg-red-500 text-white text-xs rounded-full px-1.5 py-0.5" x-text="pendingCount"></span>
+        </template>
+      </button>
+    </div>
+
+    {# ── Message feed ── #}
+    <div id="board-feed"
+         class="flex-1 overflow-y-auto p-3 space-y-1 bg-gray-50"
+         style="min-height: 200px; max-height: calc(60vh - 160px);">
+      <div class="text-center text-gray-400 text-sm py-8">
+        <i class="fas fa-clipboard-list text-2xl mb-2 block"></i>
+        Select a run to view messages.
+      </div>
+    </div>
+
+    {# ── Autocomplete dropdown ── #}
+    <div x-show="showAutocomplete" @click.outside="showAutocomplete = false"
+         id="board-autocomplete"
+         class="relative">
+    </div>
+
+    {# ── Input bar ── #}
+    <div class="border-t border-gray-200 p-3 bg-white rounded-b-xl" @mousedown.stop>
+      <form @submit.prevent="sendMessage()" class="flex items-center space-x-2">
+        <div class="flex-1 relative">
+          <input type="text"
+                 x-model="messageInput"
+                 @input="onInput()"
+                 @keydown.tab.prevent="insertMention(document.querySelector('#board-autocomplete button')?.dataset?.id || 'all')"
+                 placeholder="@agent_name message..."
+                 class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"
+                 :disabled="!currentRunId">
+        </div>
+        <button type="submit"
+                :disabled="!currentRunId || !messageInput.trim()"
+                class="px-3 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors">
+          <i class="fas fa-paper-plane"></i>
+        </button>
+      </form>
+    </div>
+  </div>
+</div>

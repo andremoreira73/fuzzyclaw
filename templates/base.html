@@ -18,9 +18,217 @@
           href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" />
     <!-- HTMX -->
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <!-- Board panel: must register BEFORE Alpine loads -->
+    <script>
+      document.addEventListener('alpine:init', () => {
+        Alpine.store('board', { open: false });
+
+        Alpine.data('boardPanel', () => ({
+          currentRunId: null,
+          filterMode: 'all',
+          pendingCount: 0,
+          messageInput: '',
+          showAutocomplete: false,
+          // Drag state
+          isDragging: false,
+          dragX: null,
+          dragY: null,
+          offsetX: 0,
+          offsetY: 0,
+          // Polling intervals
+          _feedInterval: null,
+          _runsInterval: null,
+          _badgeInterval: null,
+
+          init() {
+            const pos = JSON.parse(localStorage.getItem('boardPanelPos') || 'null');
+            if (pos) { this.dragX = pos.x; this.dragY = pos.y; }
+
+            // Watch panel open/close to start/stop polling
+            this.$watch('$store.board.open', (open) => {
+              if (open) this.onPanelOpen();
+              else this.onPanelClose();
+            });
+
+            // Poll badge for auto-open (runs always, even when panel is closed)
+            this._badgeInterval = setInterval(() => this.checkPending(), 3000);
+          },
+
+          destroy() {
+            this.onPanelClose();
+            if (this._badgeInterval) clearInterval(this._badgeInterval);
+          },
+
+          checkPending() {
+            fetch('/board/badge/')
+              .then(r => r.text())
+              .then(html => {
+                const match = html.match(/(\d+)/);
+                const count = match ? parseInt(match[1]) : 0;
+                if (count > 0 && this.pendingCount === 0 && !this.$store.board.open) {
+                  this.$store.board.open = true;
+                }
+                this.pendingCount = count;
+              })
+              .catch(() => {});
+          },
+
+          // --- Panel lifecycle ---
+          onPanelOpen() {
+            this.loadRuns();
+            this._runsInterval = setInterval(() => this.loadRuns(), 10000);
+          },
+
+          onPanelClose() {
+            this.stopFeedPolling();
+            if (this._runsInterval) { clearInterval(this._runsInterval); this._runsInterval = null; }
+          },
+
+          startFeedPolling() {
+            this.stopFeedPolling();
+            if (!this.currentRunId) return;
+            this.loadFeed();
+            this._feedInterval = setInterval(() => this.loadFeed(), 3000);
+          },
+
+          stopFeedPolling() {
+            if (this._feedInterval) { clearInterval(this._feedInterval); this._feedInterval = null; }
+          },
+
+          // --- Data loading ---
+          loadRuns() {
+            fetch('/board/active-runs/')
+              .then(r => r.json())
+              .then(runs => {
+                const select = document.getElementById('board-run-select');
+                if (!select) return;
+                const prevId = this.currentRunId;
+                select.innerHTML = '';
+                if (runs.length === 0) {
+                  select.innerHTML = '<option value="" disabled selected>No active runs</option>';
+                  this.currentRunId = null;
+                  this.stopFeedPolling();
+                  return;
+                }
+                runs.forEach(r => {
+                  const opt = document.createElement('option');
+                  opt.value = r.id;
+                  opt.textContent = 'Run #' + r.id + ': ' + r.title;
+                  select.appendChild(opt);
+                });
+                // Keep previous selection if still valid, else pick first
+                const ids = runs.map(r => String(r.id));
+                if (prevId && ids.includes(String(prevId))) {
+                  select.value = prevId;
+                } else {
+                  select.selectedIndex = 0;
+                  this.currentRunId = select.value;
+                  this.startFeedPolling();
+                }
+              })
+              .catch(() => {});
+          },
+
+          loadFeed() {
+            if (!this.currentRunId) return;
+            const url = '/runs/' + this.currentRunId + '/board/?filter=' + this.filterMode;
+            htmx.ajax('GET', url, {target: '#board-feed', swap: 'innerHTML'}).then(() => {
+              const feed = document.getElementById('board-feed');
+              if (feed) feed.scrollTop = feed.scrollHeight;
+            });
+          },
+
+          // --- Run selector ---
+          onRunChange(e) {
+            this.currentRunId = e.target.value;
+            this.startFeedPolling();
+          },
+
+          prevRun() {
+            const s = document.getElementById('board-run-select');
+            if (!s || s.selectedIndex <= 0) return;
+            s.selectedIndex--;
+            this.currentRunId = s.value;
+            this.startFeedPolling();
+          },
+
+          nextRun() {
+            const s = document.getElementById('board-run-select');
+            if (!s || s.selectedIndex >= s.options.length - 1) return;
+            s.selectedIndex++;
+            this.currentRunId = s.value;
+            this.startFeedPolling();
+          },
+
+          // --- Drag ---
+          get panelStyle() {
+            const x = this.dragX ?? (window.innerWidth - 420);
+            const y = this.dragY ?? (window.innerHeight * 0.35);
+            return 'left:' + Math.max(0, x) + 'px;top:' + Math.max(0, y) + 'px;';
+          },
+          startDrag(e) {
+            this.isDragging = true;
+            const rect = e.target.closest('.fixed').getBoundingClientRect();
+            this.offsetX = e.clientX - rect.left;
+            this.offsetY = e.clientY - rect.top;
+          },
+          onDrag(e) {
+            if (!this.isDragging) return;
+            this.dragX = e.clientX - this.offsetX;
+            this.dragY = e.clientY - this.offsetY;
+          },
+          stopDrag() {
+            if (!this.isDragging) return;
+            this.isDragging = false;
+            localStorage.setItem('boardPanelPos', JSON.stringify({x: this.dragX, y: this.dragY}));
+          },
+
+          // --- Messaging ---
+          onInput() {
+            const val = this.messageInput;
+            if (val.startsWith('@') && !val.includes(' ') && this.currentRunId) {
+              this.showAutocomplete = true;
+              fetch('/runs/' + this.currentRunId + '/board/participants/')
+                .then(r => r.text())
+                .then(html => {
+                  const el = document.getElementById('board-autocomplete');
+                  if (el) el.innerHTML = html;
+                });
+            } else {
+              this.showAutocomplete = false;
+            }
+          },
+
+          insertMention(id) {
+            this.messageInput = '@' + id + ' ';
+            this.showAutocomplete = false;
+            this.$nextTick(() => this.$el.querySelector('input[type="text"]')?.focus());
+          },
+
+          sendMessage() {
+            const msg = this.messageInput.trim();
+            if (!msg || !this.currentRunId) return;
+            const csrf = document.querySelector('body')?.getAttribute('data-csrf')
+                      || (document.cookie.match(/csrftoken=([^;]+)/) || [])[1]
+                      || '';
+            fetch('/runs/' + this.currentRunId + '/board/reply/', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf},
+              body: 'message=' + encodeURIComponent(msg),
+            }).then(r => {
+              if (r.ok) {
+                this.messageInput = '';
+                this.loadFeed();
+              }
+            }).catch(() => {});
+          },
+        }));
+      });
+    </script>
     <!-- Alpine.js -->
     <script defer src="https://unpkg.com/alpinejs@3.14.0/dist/cdn.min.js"></script>
     <style>
+      [x-cloak] { display: none !important; }
       html {
         font-size: 14px;
         font-family:
@@ -185,7 +393,7 @@
     {% endblock extra_head %}
   </head>
   <body class="bg-gray-50 min-h-screen"
-        hx-boost="true"
+        data-csrf="{{ csrf_token }}"
         hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
     <!-- Navigation -->
     <nav class="bg-white/95 backdrop-blur-md shadow-sm border-b sticky top-0 z-50">
@@ -210,6 +418,15 @@
                    class="px-3 py-2 rounded-md text-sm font-medium {% if nav == 'skills' %}text-indigo-600 bg-indigo-50{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-50{% endif %} transition-colors">
                   <i class="fas fa-tools mr-1"></i> Skills
                 </a>
+                <button x-data @click="$store.board.open = !$store.board.open"
+                        class="px-3 py-2 rounded-md text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors relative">
+                  <i class="fas fa-clipboard-list mr-1"></i> Board
+                  <span id="board-badge-nav"
+                        hx-get="{% url 'core:board_badge' %}"
+                        hx-trigger="every 5s"
+                        hx-swap="innerHTML">
+                  </span>
+                </button>
               </div>
             {% endif %}
           </div>
@@ -217,7 +434,7 @@
             {% if user.is_authenticated %}
               <span class="text-sm text-gray-600">{{ user.username }}</span>
               {% if user.is_staff %}
-                <a href="{% url 'admin:index' %}" hx-boost="false"
+                <a href="{% url 'admin:index' %}"
                    class="text-gray-600 hover:text-gray-900 font-medium text-sm">Admin</a>
               {% endif %}
               <a href="{% url 'logout' %}"
@@ -248,6 +465,9 @@
       {% block content %}
       {% endblock content %}
     </main>
+    {% if user.is_authenticated %}
+      {% include "core/partials/board_panel.html" %}
+    {% endif %}
     {% block extra_js %}
     {% endblock extra_js %}
   </body>

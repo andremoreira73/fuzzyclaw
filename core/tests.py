@@ -1472,7 +1472,11 @@ class CleanupRunTests(TestCase):
         result = cleanup_run(self.run.id)
 
         self.assertTrue(result['stream_deleted'])
-        mock_r.delete.assert_called_once_with(f'fuzzyclaw:run:{self.run.id}:done')
+        mock_r.delete.assert_called_once_with(
+            f'fuzzyclaw:run:{self.run.id}:done',
+            f'fuzzyclaw:board:{self.run.id}',
+            f'fuzzyclaw:board:{self.run.id}:participants',
+        )
 
 
 class CheckReportsToolTests(TestCase):
@@ -1967,3 +1971,187 @@ class SchedulingTests(TestCase):
         self.briefing.delete()
 
         self.assertFalse(PeriodicTask.objects.filter(name=f'briefing-{briefing_id}').exists())
+
+
+class BoardViewTests(TestCase):
+    """Tests for the Redis-only message board views."""
+
+    def setUp(self):
+        self.user = User.objects.create_user('boarduser', password='testpass123')
+        self.client.login(username='boarduser', password='testpass123')
+        self.briefing = Briefing.objects.create(
+            owner=self.user, title='Board Test', content='test',
+        )
+        self.run = Run.objects.create(
+            briefing=self.briefing, status='running',
+        )
+
+    def _mock_redis(self):
+        """Return a MagicMock configured as a Redis client."""
+        return MagicMock()
+
+    @patch('core.views._get_board_redis')
+    def test_board_messages_empty(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xrange.return_value = []
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get(f'/runs/{self.run.pk}/board/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'No messages yet.')
+
+    @patch('core.views._get_board_redis')
+    def test_board_messages_shows_messages(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xrange.return_value = [
+            ('1-0', {'from': 'agent_1', 'to': 'human', 'content': 'Hello?', 'ts': '2026-03-25T10:00:00+00:00'}),
+            ('2-0', {'from': 'human', 'to': 'agent_1', 'content': 'Hi!', 'ts': '2026-03-25T10:01:00+00:00'}),
+        ]
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get(f'/runs/{self.run.pk}/board/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'Hello?')
+        self.assertContains(resp, 'Hi!')
+
+    @patch('core.views._get_board_redis')
+    def test_board_messages_filter_human(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xrange.return_value = [
+            ('1-0', {'from': 'agent_1', 'to': 'all', 'content': 'broadcast', 'ts': '2026-03-25T10:00:00+00:00'}),
+            ('2-0', {'from': 'agent_1', 'to': 'human', 'content': 'question', 'ts': '2026-03-25T10:01:00+00:00'}),
+        ]
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get(f'/runs/{self.run.pk}/board/?filter=human')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, 'question')
+        self.assertNotContains(resp, 'broadcast')
+
+    @patch('core.views._get_board_redis')
+    def test_board_messages_404_wrong_user(self, mock_get_redis):
+        other_user = User.objects.create_user('other', password='pass')
+        other_briefing = Briefing.objects.create(owner=other_user, title='X', content='x')
+        other_run = Run.objects.create(briefing=other_briefing, status='running')
+
+        resp = self.client.get(f'/runs/{other_run.pk}/board/')
+        self.assertEqual(resp.status_code, 404)
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_posts_to_redis(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        # Return empty for the subsequent board_messages call
+        mock_r.xrange.return_value = []
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': '@agent_1 the answer is 42'},
+        )
+        self.assertEqual(resp.status_code, 200)
+
+        # Verify XADD was called with correct data
+        mock_r.xadd.assert_called_once()
+        call_args = mock_r.xadd.call_args
+        self.assertEqual(call_args[0][0], f'fuzzyclaw:board:{self.run.id}')
+        data = call_args[0][1]
+        self.assertEqual(data['from'], 'human')
+        self.assertEqual(data['to'], 'agent_1')
+        self.assertEqual(data['content'], 'the answer is 42')
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_defaults_to_all(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xrange.return_value = []
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': 'hello everyone'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        data = mock_r.xadd.call_args[0][1]
+        self.assertEqual(data['to'], 'all')
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_empty_returns_400(self, mock_get_redis):
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': ''},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    @patch('core.views._get_board_redis')
+    def test_board_badge_counts_active_runs(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.scard.return_value = 2  # 2 participants
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get('/board/badge/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '1')  # 1 run with active board
+
+    @patch('core.views._get_board_redis')
+    def test_board_badge_empty_when_no_participants(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.scard.return_value = 0
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get('/board/badge/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertNotContains(resp, 'bg-red-500')
+
+    @patch('core.views._get_board_redis')
+    def test_board_active_runs_json(self, mock_get_redis):
+        import json
+
+        mock_r = self._mock_redis()
+        mock_r.scard.return_value = 1
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get('/board/active-runs/')
+        self.assertEqual(resp.status_code, 200)
+        data = json.loads(resp.content)
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['id'], self.run.id)
+        self.assertEqual(data[0]['title'], 'Board Test')
+
+    @patch('core.views._get_board_redis')
+    def test_board_active_runs_excludes_no_participants(self, mock_get_redis):
+        import json
+
+        mock_r = self._mock_redis()
+        mock_r.scard.return_value = 0
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.get('/board/active-runs/')
+        data = json.loads(resp.content)
+        self.assertEqual(data, [])
+
+    @patch('core.views._get_board_redis')
+    def test_board_participants(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.smembers.return_value = {'agent_1', 'agent_2'}
+        mock_get_redis.return_value = mock_r
+
+        AgentRun.objects.create(
+            run=self.run, agent_name='agent', status='running',
+        )
+
+        resp = self.client.get(f'/runs/{self.run.pk}/board/participants/')
+        self.assertEqual(resp.status_code, 200)
+        self.assertContains(resp, '@agent_1')
+        self.assertContains(resp, '@agent_2')
+
+    def test_board_views_require_login(self):
+        self.client.logout()
+        urls = [
+            f'/runs/{self.run.pk}/board/',
+            f'/runs/{self.run.pk}/board/reply/',
+            f'/runs/{self.run.pk}/board/participants/',
+            '/board/badge/',
+            '/board/active-runs/',
+        ]
+        for url in urls:
+            resp = self.client.get(url)
+            self.assertIn(resp.status_code, [302, 405], msg=f"{url} should redirect or deny")

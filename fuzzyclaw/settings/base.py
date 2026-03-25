@@ -154,6 +154,7 @@ FUZZYCLAW_TOOLS = {
     'career_scrape': 'Scrape career/jobs pages with job-specific selectors (English + German).',
     'web_scrape': 'Scrape a web page and return cleaned text (uses ScrapingBee API).',
     'web_search': 'Search the web for information.',
+    'message_board': 'Post and read messages on the run message board (human-in-the-loop + agent-to-agent).',
     # Deep Agents built-in filesystem tools (always available, listed for reference)
     'ls': 'List directory contents (built-in).',
     'read_file': 'Read a file (built-in).',
@@ -206,6 +207,7 @@ FUZZYCLAW_AGENT_MEM_LIMIT = '512m'
 FUZZYCLAW_AGENT_CPU_LIMIT = 0.5      # CPU cores
 FUZZYCLAW_AGENT_TIMEOUT = 600        # seconds
 FUZZYCLAW_MAX_CONTAINERS = 10        # max concurrent agent containers
+FUZZYCLAW_HITL_TIMEOUT = int(os.environ.get('FUZZYCLAW_HITL_TIMEOUT', '1800'))  # 30 min max wait for human
 # Host path of the project directory — needed because the Celery worker runs
 # inside a container but talks to the host Docker daemon via the socket.
 # Paths in volume mounts must be host paths, not container paths.

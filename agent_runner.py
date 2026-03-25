@@ -149,6 +149,24 @@ def main():
     if agent_def['memory']:
         store_ctx = get_memory_store(agent_def['name'])
 
+    # Optional message board (Redis-backed)
+    self_id = os.environ.get('SELF_ID', '')
+    run_id = os.environ.get('RUN_ID', '')
+    has_message_board = 'message_board' in agent_def['tools']
+    board_redis = None
+
+    if has_message_board and self_id and run_id:
+        try:
+            from agent_tools.message_board import get_board_redis
+            board_redis = get_board_redis()
+            if board_redis:
+                participants_key = f"fuzzyclaw:board:{run_id}:participants"
+                board_redis.sadd(participants_key, self_id)
+                logger.info("Registered as board participant: %s", self_id)
+        except Exception as e:
+            logger.warning("Message board registration failed: %s", e)
+            board_redis = None
+
     system_prompt = f"""You are a FuzzyClaw specialist agent: {agent_def['name']}
 
 {agent_def['prompt']}
@@ -171,12 +189,25 @@ Complete the task given to you and return a clear, structured report of your fin
         except (json.JSONDecodeError, KeyError):
             logger.warning("Failed to parse AGENT_VOLUMES env var")
 
+    # Append message board context to system prompt
+    if has_message_board and self_id:
+        system_prompt += f"""
+
+## Message Board
+You are `{self_id}` on this run's message board. You have tools to send messages to the human operator and to other agents, and to wait for their replies. This is how you interact with the human — use your message board tools whenever the task requires human input, feedback, or a conversation. When you send a message to the human, always wait for their actual response before proceeding. Never assume or fabricate what the human said."""
+
     def run_agent(store=None):
         agent_tools = list(tools)
         if store is not None:
             memory_tools = build_memory_tools(store, agent_def['name'])
             agent_tools.extend(memory_tools)
             logger.info("Memory tools enabled: remember, recall, recall_all")
+
+        if board_redis is not None:
+            from agent_tools.message_board import build_message_board_tools
+            board_tools = build_message_board_tools(board_redis, self_id, run_id)
+            agent_tools.extend(board_tools)
+            logger.info("Message board tools enabled: post_message, read_messages, list_participants, ask_human")
 
         # All agents get access to all skills via the mounted /app/skills directory
         agent_kwargs = dict(
@@ -229,6 +260,16 @@ Complete the task given to you and return a clear, structured report of your fin
 
         signal_completion('failed')
         sys.exit(1)
+
+    finally:
+        # Deregister from message board
+        if board_redis and self_id and run_id:
+            try:
+                participants_key = f"fuzzyclaw:board:{run_id}:participants"
+                board_redis.srem(participants_key, self_id)
+                logger.info("Deregistered board participant: %s", self_id)
+            except Exception:
+                pass
 
 
 if __name__ == '__main__':

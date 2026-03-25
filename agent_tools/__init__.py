@@ -77,6 +77,8 @@ def build_tools(tool_names: list[str]) -> list:
 
     resolved = []
     for name in tool_names:
+        if name == 'message_board':
+            continue  # Handled by agent_runner.py (needs Redis state)
         if name in available:
             resolved.append(available[name])
         else:

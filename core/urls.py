@@ -24,4 +24,11 @@ urlpatterns = [
     # Agents & Skills
     path('agents/', views.agent_list, name='agent_list'),
     path('skills/', views.skill_list, name='skill_list'),
+
+    # Message Board
+    path('board/badge/', views.board_badge, name='board_badge'),
+    path('board/active-runs/', views.board_active_runs, name='board_active_runs'),
+    path('runs/<int:run_pk>/board/', views.board_messages, name='board_messages'),
+    path('runs/<int:run_pk>/board/reply/', views.board_reply, name='board_reply'),
+    path('runs/<int:run_pk>/board/participants/', views.board_participants, name='board_participants'),
 ]

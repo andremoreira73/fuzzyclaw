@@ -411,10 +411,13 @@ def start_agent_container(
         'AGENT_FILE': '/app/agent.md',
         'COMMS_DIR': '/app/comms',
         'SKILLS_DIR': '/app/skills',
-        # New: Redis signaling env vars for agent_runner.py
+        # Redis signaling env vars for agent_runner.py
         'REDIS_URL': getattr(settings, 'FUZZYCLAW_REDIS_URL', ''),
         'RUN_ID': str(run_id),
         'AGENT_RUN_ID': str(agent_run_id),
+        # Message board identity
+        'SELF_ID': f"{agent_name}_{agent_run_id}",
+        'FUZZYCLAW_HITL_TIMEOUT': str(getattr(settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)),
     }
 
     # Pass only the needed API key
@@ -635,15 +638,17 @@ def cleanup_run(run_id: int) -> dict:
             except Exception as e:
                 logger.warning("Failed to cleanup comms dir %s: %s", comms_dir, e)
 
-    # Delete Redis stream
+    # Delete Redis streams (completion + board)
     try:
         r = _get_redis_client()
         if r:
             stream_key = f"fuzzyclaw:run:{run_id}:done"
-            r.delete(stream_key)
+            board_key = f"fuzzyclaw:board:{run_id}"
+            participants_key = f"fuzzyclaw:board:{run_id}:participants"
+            r.delete(stream_key, board_key, participants_key)
             result['stream_deleted'] = True
     except Exception as e:
-        logger.warning("Failed to delete Redis stream for run %d: %s", run_id, e)
+        logger.warning("Failed to delete Redis streams for run %d: %s", run_id, e)
 
     logger.info("Cleanup for run %d: %s", run_id, result)
     return result

@@ -1,18 +1,21 @@
 """Dashboard views for FuzzyClaw web UI."""
 import logging
+from datetime import datetime, timezone
 
+import redis as redis_lib
 from django.conf import settings
-
-logger = logging.getLogger(__name__)
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
+from django.utils import timezone as dj_timezone
 from django.views.decorators.http import require_POST
 
 from .models import AgentImage, AgentRun, Briefing, Run
 from .scheduling import get_schedule_status, sync_schedule
+
+logger = logging.getLogger(__name__)
 from .registry import get_available_agents, get_available_skills
 
 
@@ -298,3 +301,194 @@ def skill_list(request):
         'breadcrumbs': [{'label': 'Skills'}],
     }
     return render(request, 'core/skill_list.html', context)
+
+
+# ---------------------------------------------------------------------------
+# Message Board — all reads/writes go to Redis directly
+# ---------------------------------------------------------------------------
+
+def _get_board_redis():
+    """Get a Redis client for board operations."""
+    return redis_lib.from_url(settings.FUZZYCLAW_REDIS_URL, decode_responses=True)
+
+
+def _parse_ts(ts_str: str):
+    """Parse an ISO timestamp string into a datetime, or None."""
+    try:
+        return datetime.fromisoformat(ts_str)
+    except (ValueError, TypeError):
+        return None
+
+
+@login_required
+def board_messages(request, run_pk):
+    """HTMX endpoint: return board messages as HTML partial.
+
+    Reads directly from Redis Streams via XRANGE. No DB model involved.
+
+    Query params:
+      filter: 'all' (default) or 'human' (only messages to/from human)
+    """
+    run = get_object_or_404(
+        Run.objects.select_related('briefing'),
+        pk=run_pk,
+        briefing__owner=request.user,
+    )
+    filter_mode = request.GET.get('filter', 'all')
+
+    board_messages_list = []
+    try:
+        r = _get_board_redis()
+        stream_key = f"fuzzyclaw:board:{run.id}"
+        entries = r.xrange(stream_key, count=200)
+
+        for entry_id, data in entries:
+            sender = data.get('from', '')
+            recipient = data.get('to', '')
+
+            if filter_mode == 'human':
+                if recipient != 'human' and sender != 'human':
+                    continue
+
+            board_messages_list.append({
+                'id': entry_id,
+                'sender': sender,
+                'recipient': recipient,
+                'content': data.get('content', ''),
+                'created_at': _parse_ts(data.get('ts', '')),
+            })
+    except Exception as e:
+        logger.warning("board_messages: Redis read failed: %s", e)
+
+    context = {
+        'board_messages': board_messages_list,
+        'run': run,
+    }
+    return render(request, 'core/partials/board_messages.html', context)
+
+
+@login_required
+@require_POST
+def board_reply(request, run_pk):
+    """HTMX endpoint: human posts a reply to the board.
+
+    Writes directly to Redis Streams via XADD. No DB write.
+    POST body: message (text with @recipient prefix)
+    """
+    run = get_object_or_404(
+        Run.objects.select_related('briefing'),
+        pk=run_pk,
+        briefing__owner=request.user,
+    )
+
+    raw_message = request.POST.get('message', '').strip()
+    if not raw_message:
+        return HttpResponse(status=400)
+
+    # Parse @recipient prefix
+    recipient = 'all'
+    content = raw_message
+    if raw_message.startswith('@'):
+        parts = raw_message.split(' ', 1)
+        recipient = parts[0][1:]  # strip the @
+        content = parts[1] if len(parts) >= 2 else ''
+
+    try:
+        r = _get_board_redis()
+        stream_key = f"fuzzyclaw:board:{run.id}"
+        r.xadd(stream_key, {
+            'from': 'human',
+            'to': recipient,
+            'content': content,
+            'ts': dj_timezone.now().isoformat(),
+        })
+    except Exception as e:
+        logger.warning("board_reply: Redis write failed: %s", e)
+
+    # Return updated messages partial
+    return board_messages(request, run_pk)
+
+
+@login_required
+def board_badge(request):
+    """HTMX endpoint: return badge HTML showing count of runs with active boards."""
+    waiting_count = 0
+    try:
+        r = _get_board_redis()
+        active_run_ids = list(
+            Run.objects.filter(
+                briefing__owner=request.user,
+                status='running',
+            ).values_list('id', flat=True)
+        )
+        for run_id in active_run_ids:
+            participants_key = f"fuzzyclaw:board:{run_id}:participants"
+            if r.scard(participants_key) > 0:
+                waiting_count += 1
+    except Exception as e:
+        logger.warning("board_badge: Redis read failed: %s", e)
+
+    context = {'waiting_count': waiting_count}
+    return render(request, 'core/partials/board_badge.html', context)
+
+
+@login_required
+def board_participants(request, run_pk):
+    """HTMX endpoint: return participant list for @autocomplete."""
+    run = get_object_or_404(
+        Run.objects.select_related('briefing'),
+        pk=run_pk,
+        briefing__owner=request.user,
+    )
+
+    enriched = []
+    try:
+        r = _get_board_redis()
+        participants_key = f"fuzzyclaw:board:{run.id}:participants"
+        members = r.smembers(participants_key)
+
+        for p in sorted(members):
+            parts = p.rsplit('_', 1)
+            agent_name = parts[0] if parts else p
+            agent_run_id = parts[1] if len(parts) == 2 else ''
+
+            status = 'unknown'
+            if agent_run_id.isdigit():
+                ar = AgentRun.objects.filter(pk=int(agent_run_id), run=run).first()
+                if ar:
+                    status = ar.status
+
+            enriched.append({
+                'id': p,
+                'agent_name': agent_name,
+                'status': status,
+            })
+    except Exception as e:
+        logger.warning("board_participants: Redis read failed: %s", e)
+
+    context = {'participants': enriched, 'run': run}
+    return render(request, 'core/partials/board_participants.html', context)
+
+
+@login_required
+def board_active_runs(request):
+    """JSON endpoint: return list of runs with active boards (for run selector)."""
+    data = []
+    try:
+        r = _get_board_redis()
+        active_runs = (
+            Run.objects.filter(
+                briefing__owner=request.user,
+                status='running',
+            )
+            .select_related('briefing')
+            .order_by('-created_at')
+        )
+        for run in active_runs:
+            participants_key = f"fuzzyclaw:board:{run.id}:participants"
+            if r.scard(participants_key) > 0:
+                data.append({'id': run.id, 'title': run.briefing.title[:30]})
+    except Exception as e:
+        logger.warning("board_active_runs: Redis read failed: %s", e)
+
+    return JsonResponse(data, safe=False)

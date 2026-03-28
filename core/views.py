@@ -307,9 +307,14 @@ def skill_list(request):
 # Message Board — all reads/writes go to Redis directly
 # ---------------------------------------------------------------------------
 
+_board_pool = redis_lib.ConnectionPool.from_url(
+    settings.FUZZYCLAW_REDIS_URL, decode_responses=True,
+)
+
+
 def _get_board_redis():
-    """Get a Redis client for board operations."""
-    return redis_lib.from_url(settings.FUZZYCLAW_REDIS_URL, decode_responses=True)
+    """Get a Redis client for board operations (shared connection pool)."""
+    return redis_lib.Redis(connection_pool=_board_pool)
 
 
 def _parse_ts(ts_str: str):
@@ -418,19 +423,18 @@ def board_reply(request, run_pk):
 
 @login_required
 def board_badge(request):
-    """HTMX endpoint: return badge HTML showing count of runs with active boards."""
+    """HTMX endpoint: return badge HTML showing count of runs with board messages."""
     waiting_count = 0
     try:
         r = _get_board_redis()
-        active_run_ids = list(
-            Run.objects.filter(
-                briefing__owner=request.user,
-                status='running',
-            ).values_list('id', flat=True)
+        recent_run_ids = list(
+            Run.objects.filter(briefing__owner=request.user)
+            .order_by('-created_at')
+            .values_list('id', flat=True)[:20]
         )
-        for run_id in active_run_ids:
-            participants_key = f"fuzzyclaw:board:{run_id}:participants"
-            if r.scard(participants_key) > 0:
+        for run_id in recent_run_ids:
+            stream_key = f"fuzzyclaw:board:{run_id}"
+            if r.xlen(stream_key) > 0:
                 waiting_count += 1
     except Exception as e:
         logger.warning("board_badge: Redis read failed: %s", e)
@@ -479,21 +483,18 @@ def board_participants(request, run_pk):
 
 @login_required
 def board_active_runs(request):
-    """JSON endpoint: return list of runs with active boards (for run selector)."""
+    """JSON endpoint: return list of runs with board messages (for run selector)."""
     data = []
     try:
         r = _get_board_redis()
-        active_runs = (
-            Run.objects.filter(
-                briefing__owner=request.user,
-                status='running',
-            )
+        recent_runs = (
+            Run.objects.filter(briefing__owner=request.user)
             .select_related('briefing')
-            .order_by('-created_at')
+            .order_by('-created_at')[:20]
         )
-        for run in active_runs:
-            participants_key = f"fuzzyclaw:board:{run.id}:participants"
-            if r.scard(participants_key) > 0:
+        for run in recent_runs:
+            stream_key = f"fuzzyclaw:board:{run.id}"
+            if r.xlen(stream_key) > 0:
                 data.append({'id': run.id, 'title': run.briefing.title[:30]})
     except Exception as e:
         logger.warning("board_active_runs: Redis read failed: %s", e)

@@ -36,11 +36,15 @@ Per-run shared communication channel. Agents, coordinator, and human exchange me
 
 **Addressing:** `{agent_name}_{agent_run_id}`, `coordinator_{run_id}`, or `human`.
 
-**Container-side tools** (`agent_tools/message_board.py`): `post_message`, `read_messages`, `list_participants`, `ask_human`. Gated by `message_board` in agent frontmatter tools list.
+**Container-side tools** (`agent_tools/message_board.py`): `post_message`, `read_messages`, `list_participants`. Gated by `message_board` in agent frontmatter tools list.
+
+**Notification middleware** (`agent_tools/board_middleware.py`): `BoardNotificationMiddleware` — a `before_model` hook that does a non-blocking Redis check between agent steps. If new messages are found for this agent, injects a SystemMessage so the LLM knows to check the board. Wired in `agent_runner.py` via `create_deep_agent(middleware=[...])`.
 
 **Dashboard panel** (Alpine.js): draggable, run selector, All/To-me filter, HTMX polling every 3s, `@` autocomplete for participants.
 
-**Django views** (Redis-only): `board_messages`, `board_reply`, `board_badge`, `board_active_runs`, `board_participants`.
+**Django views** (Redis-only): `board_messages`, `board_reply`, `board_badge`, `board_active_runs`, `board_participants`. Board visibility is based on stream content (`XLEN > 0`), not run status or participant count — runs with messages show in the dropdown regardless of status.
+
+**Connection pooling:** Django board views share a module-level `ConnectionPool` instead of creating a new Redis connection per request.
 
 **Lessons from v1:** Don't name specific tools in agent prompts. Don't build a sync layer when both sides can read Redis. `hx-boost="true"` on `<body>` breaks HTMX partials. Alpine `@click` only works inside `x-data` scope.
 
@@ -128,8 +132,8 @@ Cross-model review by GPT-5.4 Codex + Claude Opus. Full findings in `code_review
 - **Status:** done
 
 **R2-3 — ask_human() drops non-human messages**
-- Added `_pending_messages` buffer; `read_messages()` drains it immediately
-- **Status:** done
+- ~~Added `_pending_messages` buffer~~ — removed: `ask_human` tool dropped in simplification (2026-03-28)
+- **Status:** superseded
 
 **R2-4 — Board send failure not surfaced in UI**
 - JS renders error text above input; `x-text` (not `x-html`) to prevent injection
@@ -142,8 +146,8 @@ Cross-model review by GPT-5.4 Codex + Claude Opus. Full findings in `code_review
 ### Round 3 Fix (Codex follow-up)
 
 **R3-1 — Buffered messages returned immediately**
-- `read_messages()` returns instantly when `_pending_messages` has content
-- **Status:** done
+- ~~`read_messages()` returns instantly when `_pending_messages` has content~~ — removed: buffer dropped with `ask_human` (2026-03-28)
+- **Status:** superseded
 
 **R3-2 — Mention-only empty messages rejected**
 - `board_reply` rejects `@agent_name` with no message body (400)

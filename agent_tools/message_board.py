@@ -1,8 +1,8 @@
 """Container-side message board tools.
 
-Provides post_message, read_messages, list_participants, and ask_human for
-specialist agents running inside Docker containers. Communicates via Redis
-Streams — no Django imports.
+Provides post_message, read_messages, and list_participants for specialist
+agents running inside Docker containers. Communicates via Redis Streams —
+no Django imports.
 
 Env vars:
   REDIS_URL              — Redis connection string (db=1)
@@ -50,8 +50,7 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
         run_id: Current run ID.
 
     Returns:
-        List of @tool functions: post_message, read_messages, list_participants,
-        ask_human.
+        List of @tool functions: post_message, read_messages, list_participants.
     """
     stream_key = f"fuzzyclaw:board:{run_id}"
     participants_key = f"fuzzyclaw:board:{run_id}:participants"
@@ -61,8 +60,6 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
 
     # Track read position across calls within this agent's lifetime
     last_seen_id = '0-0'
-    # Buffer for messages skipped by ask_human() (non-human sender)
-    _pending_messages = []
 
     @tool
     def post_message(to: str, message: str) -> str:
@@ -97,18 +94,10 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                           return immediately, max 1800). Use 1800 when waiting
                           for a human reply.
         """
-        nonlocal last_seen_id, _pending_messages
+        nonlocal last_seen_id
         wait_seconds = max(0, min(wait_seconds, max_wait))
 
-        # Drain any messages buffered by ask_human() first
-        messages = list(_pending_messages)
-        _pending_messages = []
-
-        # If we already have buffered messages, return them immediately
-        if messages:
-            logger.info("Board: %s returning %d buffered message(s)", self_id, len(messages))
-            return json.dumps(messages)
-
+        messages = []
         deadline = time.time() + wait_seconds
 
         while True:
@@ -162,64 +151,56 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
         logger.info("Board: %s listed %d participants", self_id, len(participants))
         return json.dumps(participants)
 
-    @tool
-    def ask_human(question: str) -> str:
-        """Ask the human operator a question and wait for their response.
-        This posts your question to the message board and blocks until the
-        human replies (up to 30 minutes). Use this when you need guidance,
-        clarification, or a decision before proceeding.
+    return [post_message, read_messages, list_participants]
 
-        Returns the human's response text, or an empty string if they
-        don't respond within the timeout.
 
-        Args:
-            question: Your question for the human operator.
-        """
-        # Post the question
-        redis_client.xadd(stream_key, {
-            'from': self_id,
-            'to': 'human',
-            'content': question,
-            'ts': datetime.now(timezone.utc).isoformat(),
-        })
-        logger.info("Board: %s asks human: %s", self_id, question[:100])
+class BoardSetup:
+    """Result of setup_message_board() — tools, middleware, and prompt section."""
 
-        # Block waiting for response — buffer non-human messages for read_messages()
-        nonlocal last_seen_id, _pending_messages
-        deadline = time.time() + max_wait
+    def __init__(self, tools, middleware, prompt_section):
+        self.tools = tools
+        self.middleware = middleware
+        self.prompt_section = prompt_section
 
-        while time.time() < deadline:
-            remaining_ms = max(100, int((deadline - time.time()) * 1000))
-            try:
-                streams = redis_client.xread(
-                    {stream_key: last_seen_id},
-                    block=remaining_ms,
-                    count=100,
-                )
-            except Exception as e:
-                logger.warning("Board ask_human read failed: %s", e)
-                break
 
-            if streams:
-                for entry_id, data in streams[0][1]:
-                    last_seen_id = entry_id
-                    recipient = data.get('to', '')
-                    sender = data.get('from', '')
-                    is_for_us = recipient == self_id or recipient == 'all'
-                    if is_for_us and sender == 'human':
-                        response = data.get('content', '')
-                        logger.info("Board: %s got human response: %s", self_id, response[:100])
-                        return response
-                    elif is_for_us:
-                        # Buffer non-human messages so read_messages() can return them later
-                        _pending_messages.append({
-                            'from': sender,
-                            'to': recipient,
-                            'content': data.get('content', ''),
-                            'ts': data.get('ts', ''),
-                        })
+def setup_message_board(redis_client, self_id: str, run_id: str) -> BoardSetup | None:
+    """Set up all message board components for an agent.
 
-        logger.info("Board: %s ask_human timed out", self_id)
-        return ""
+    Handles participant registration, tool creation, middleware creation,
+    and system prompt section — one call, one place.
 
-    return [post_message, read_messages, list_participants, ask_human]
+    Args:
+        redis_client: Connected Redis client, or None.
+        self_id: This agent's board identity (e.g. market-researcher_423).
+        run_id: Current run ID.
+
+    Returns:
+        BoardSetup with tools, middleware, and prompt_section, or None if
+        Redis is unavailable.
+    """
+    if redis_client is None or not self_id or not run_id:
+        return None
+
+    # Register as participant
+    participants_key = f"fuzzyclaw:board:{run_id}:participants"
+    try:
+        redis_client.sadd(participants_key, self_id)
+        logger.info("Registered as board participant: %s", self_id)
+    except Exception as e:
+        logger.warning("Message board registration failed: %s", e)
+        return None
+
+    tools = build_message_board_tools(redis_client, self_id, run_id)
+
+    from agent_tools.board_middleware import BoardNotificationMiddleware
+    middleware = [BoardNotificationMiddleware(redis_client, self_id, run_id)]
+
+    prompt_section = f"""
+
+## Message Board
+You are `{self_id}` on this run's message board. You have tools to send messages to the human operator and to other agents, and to wait for their replies. This is how you interact with the human — use your message board tools whenever the task requires human input, feedback, or a conversation. When you send a message to the human, always wait for their actual response before proceeding. Never assume or fabricate what the human said."""
+
+    logger.info("Message board tools enabled: post_message, read_messages, list_participants")
+    logger.info("Board notification middleware enabled")
+
+    return BoardSetup(tools, middleware, prompt_section)

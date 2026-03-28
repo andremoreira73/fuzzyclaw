@@ -151,27 +151,21 @@ def main():
         logger.info("Agent: %s (model: %s)", agent_name, agent_def['model_choice'])
 
         model = get_model(agent_def['model_choice'])
-        tools = build_tools(agent_def['tools'])
+        # Filter out message_board — handled separately via setup_message_board()
+        standard_tools = [t for t in agent_def['tools'] if t != 'message_board']
+        tools = build_tools(standard_tools)
 
         # Optional persistent memory (PostgresStore context manager)
         store_ctx = None
         if agent_def['memory']:
             store_ctx = get_memory_store(agent_def['name'])
 
-        # Optional message board (Redis-backed)
-        has_message_board = 'message_board' in agent_def['tools']
-
-        if has_message_board and self_id and run_id:
-            try:
-                from agent_tools.message_board import get_board_redis
-                board_redis = get_board_redis()
-                if board_redis:
-                    participants_key = f"fuzzyclaw:board:{run_id}:participants"
-                    board_redis.sadd(participants_key, self_id)
-                    logger.info("Registered as board participant: %s", self_id)
-            except Exception as e:
-                logger.warning("Message board registration failed: %s", e)
-                board_redis = None
+        # Optional message board (Redis-backed) — one setup call
+        board = None
+        if 'message_board' in agent_def['tools'] and self_id and run_id:
+            from agent_tools.message_board import get_board_redis, setup_message_board
+            board_redis = get_board_redis()
+            board = setup_message_board(board_redis, self_id, run_id)
 
         system_prompt = f"""You are a FuzzyClaw specialist agent: {agent_def['name']}
 
@@ -195,33 +189,29 @@ Complete the task given to you and return a clear, structured report of your fin
             except (json.JSONDecodeError, KeyError):
                 logger.warning("Failed to parse AGENT_VOLUMES env var")
 
-        # Append message board context to system prompt
-        if has_message_board and self_id:
-            system_prompt += f"""
-
-## Message Board
-You are `{self_id}` on this run's message board. You have tools to send messages to the human operator and to other agents, and to wait for their replies. This is how you interact with the human — use your message board tools whenever the task requires human input, feedback, or a conversation. When you send a message to the human, always wait for their actual response before proceeding. Never assume or fabricate what the human said."""
+        if board:
+            system_prompt += board.prompt_section
 
         def run_agent(store=None):
             agent_tools = list(tools)
+            middleware = []
+
             if store is not None:
                 memory_tools = build_memory_tools(store, agent_def['name'])
                 agent_tools.extend(memory_tools)
                 logger.info("Memory tools enabled: remember, recall, recall_all")
 
-            if board_redis is not None:
-                from agent_tools.message_board import build_message_board_tools
-                board_tools = build_message_board_tools(board_redis, self_id, run_id)
-                agent_tools.extend(board_tools)
-                logger.info("Message board tools enabled: post_message, read_messages, list_participants, ask_human")
+            if board:
+                agent_tools.extend(board.tools)
+                middleware.extend(board.middleware)
 
-            # All agents get access to all skills via the mounted /app/skills directory
             agent_kwargs = dict(
                 model=model,
                 tools=agent_tools,
                 system_prompt=system_prompt,
                 backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
                 skills=['/skills'],
+                middleware=middleware,
             )
 
             agent = create_deep_agent(**agent_kwargs)

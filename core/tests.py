@@ -2237,19 +2237,19 @@ class BoardViewTests(TestCase):
         self.assertContains(resp, 'Failed to send message', status_code=502)
 
     @patch('core.views._get_board_redis')
-    def test_board_badge_counts_active_runs(self, mock_get_redis):
+    def test_board_badge_counts_runs_with_messages(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.scard.return_value = 2  # 2 participants
+        mock_r.xlen.return_value = 3  # stream has messages
         mock_get_redis.return_value = mock_r
 
         resp = self.client.get('/board/badge/')
         self.assertEqual(resp.status_code, 200)
-        self.assertContains(resp, '1')  # 1 run with active board
+        self.assertContains(resp, '1')  # 1 run with board messages
 
     @patch('core.views._get_board_redis')
-    def test_board_badge_empty_when_no_participants(self, mock_get_redis):
+    def test_board_badge_empty_when_no_messages(self, mock_get_redis):
         mock_r = self._mock_redis()
-        mock_r.scard.return_value = 0
+        mock_r.xlen.return_value = 0
         mock_get_redis.return_value = mock_r
 
         resp = self.client.get('/board/badge/')
@@ -2261,7 +2261,7 @@ class BoardViewTests(TestCase):
         import json
 
         mock_r = self._mock_redis()
-        mock_r.scard.return_value = 1
+        mock_r.xlen.return_value = 5  # stream has messages
         mock_get_redis.return_value = mock_r
 
         resp = self.client.get('/board/active-runs/')
@@ -2272,11 +2272,11 @@ class BoardViewTests(TestCase):
         self.assertEqual(data[0]['title'], 'Board Test')
 
     @patch('core.views._get_board_redis')
-    def test_board_active_runs_excludes_no_participants(self, mock_get_redis):
+    def test_board_active_runs_excludes_empty_streams(self, mock_get_redis):
         import json
 
         mock_r = self._mock_redis()
-        mock_r.scard.return_value = 0
+        mock_r.xlen.return_value = 0
         mock_get_redis.return_value = mock_r
 
         resp = self.client.get('/board/active-runs/')

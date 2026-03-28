@@ -1,10 +1,13 @@
 """FuzzyClaw agent runtime — coordinator agent factory."""
 import logging
 
+import redis as redis_lib
 from django.conf import settings as django_settings
 
 from langchain.agents import create_agent
 from langchain_core.messages import HumanMessage
+
+from .coordinator_middleware import CoordinatorGuardMiddleware
 
 logger = logging.getLogger(__name__)
 
@@ -31,13 +34,32 @@ def get_model(model_name: str):
         return ChatOpenAI(model=model_name, **defaults)
 
 
+def _get_coordinator_redis():
+    """Get a Redis client for the coordinator's board tools."""
+    redis_url = getattr(django_settings, 'FUZZYCLAW_REDIS_URL', '')
+    if not redis_url:
+        return None
+    try:
+        r = redis_lib.from_url(redis_url, decode_responses=True)
+        r.ping()
+        return r
+    except Exception as e:
+        logger.warning("Coordinator board: Redis unavailable: %s", e)
+        return None
+
+
 def build_coordinator(briefing, run):
-    """Build a Deep Agent coordinator for a given briefing and run.
+    """Build a coordinator agent for a given briefing and run.
 
     The coordinator gets:
     - The briefing content as system prompt context
     - Tools to list agents, dispatch specialists, check/read reports, and submit its final report
+    - Message board tools to communicate with agents and humans
+    - Guard middleware to prevent early exit while agents are running
     """
+    from agent_tools.board_middleware import BoardNotificationMiddleware
+    from agent_tools.message_board import build_message_board_tools
+
     from .agent_tools import (
         check_reports,
         dispatch_specialist,
@@ -48,6 +70,7 @@ def build_coordinator(briefing, run):
     )
 
     model = get_model(briefing.coordinator_model)
+    self_id = f"coordinator_{run.id}"
 
     system_prompt = f"""You are the FuzzyClaw coordinator agent. Your job is to execute a briefing by following its steps, dispatching specialist agents as needed, and producing a final synthesis report.
 
@@ -62,7 +85,7 @@ def build_coordinator(briefing, run):
 1. Read the briefing steps carefully.
 2. Follow the instructions from the briefing in a disciplined way.
 3. Use the tools available to you to act according to the instructions from the briefing.
-4. If you are using specialist agents, use the tools available to start them. 
+4. If you are using specialist agents, use the tools available to start them.
 5. As each specialist agent returns their reports, read them one at a time to avoid output formatting issues.
 6. Be smart: make supporting decisions when the briefing doesn't cover a situation.
 
@@ -81,17 +104,38 @@ def build_coordinator(briefing, run):
 - When calling tools, ensure all string values in arguments are properly JSON-escaped. Do not include unescaped newlines, quotes, or special characters in tool call arguments.
 """
 
+    tools = [
+        list_available_agents,
+        dispatch_specialist,
+        check_reports,
+        read_report,
+        submit_coordinator_report,
+        manage_schedule,
+    ]
+
+    middleware = [CoordinatorGuardMiddleware(run.id)]
+
+    # Message board — coordinator can talk to agents and humans
+    board_redis = _get_coordinator_redis()
+    if board_redis:
+        participants_key = f"fuzzyclaw:board:{run.id}:participants"
+        board_redis.sadd(participants_key, self_id)
+        logger.info("Coordinator registered as board participant: %s", self_id)
+
+        board_tools = build_message_board_tools(board_redis, self_id, str(run.id))
+        tools.extend(board_tools)
+
+        middleware.append(BoardNotificationMiddleware(board_redis, self_id, str(run.id)))
+
+        system_prompt += f"""
+## Message Board
+You are `{self_id}` on this run's message board. You can send messages to the human and to specialist agents, and read their replies. Use this for coordination when needed."""
+
     agent = create_agent(
         model=model,
-        tools=[
-            list_available_agents,
-            dispatch_specialist,
-            check_reports,
-            read_report,
-            submit_coordinator_report,
-            manage_schedule,
-        ],
+        tools=tools,
         system_prompt=system_prompt,
+        middleware=middleware,
     )
 
     return agent

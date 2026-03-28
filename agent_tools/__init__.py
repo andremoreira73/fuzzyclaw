@@ -5,16 +5,13 @@ inside Docker containers. It is NOT a Django app — no Django imports allowed.
 
 Tools are registered by name and resolved at runtime based on the agent's
 `tools` frontmatter list.
+
+Imports are lazy inside build_tools() so that importing the package (e.g. for
+message_board or board_middleware) doesn't pull in heavy deps like bs4.
 """
 import logging
 
 from langchain_core.tools import tool
-
-from .bash import run_bash
-from .career_scrape import scrape_career_page
-from .memory import build_memory_tools, get_memory_store
-from .web_scrape import scrape_url
-from .web_search import search_web
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +21,16 @@ def build_tools(tool_names: list[str]) -> list:
 
     Resolves tool names from the agent's frontmatter into callable tool objects.
     Filesystem tools (ls, read_file, etc.) come from Deep Agents automatically.
+
+    Imports are inside this function because these modules have container-only
+    dependencies (bs4, etc.) that aren't available in the web/celery environment.
+    The coordinator imports agent_tools for message_board only.
     """
+    from .bash import run_bash
+    from .career_scrape import scrape_career_page
+    from .web_scrape import scrape_url
+    from .web_search import search_web
+
     available = {}
 
     @tool

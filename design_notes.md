@@ -38,7 +38,11 @@ Per-run shared communication channel. Agents, coordinator, and human exchange me
 
 **Container-side tools** (`agent_tools/message_board.py`): `post_message`, `read_messages`, `list_participants`. Gated by `message_board` in agent frontmatter tools list.
 
-**Notification middleware** (`agent_tools/board_middleware.py`): `BoardNotificationMiddleware` — a `before_model` hook that does a non-blocking Redis check between agent steps. If new messages are found for this agent, injects a SystemMessage so the LLM knows to check the board. Wired in `agent_runner.py` via `create_deep_agent(middleware=[...])`.
+**Notification middleware** (`agent_tools/board_middleware.py`): `BoardNotificationMiddleware` — a `before_model` hook that does a non-blocking Redis check between agent steps. If new messages are found for this agent, injects a SystemMessage so the LLM knows to check the board. Used by both specialist agents (`agent_runner.py`) and the coordinator (`agent_runtime.py`).
+
+**Coordinator guard middleware** (`core/coordinator_middleware.py`): `CoordinatorGuardMiddleware` — an `after_model` hook that prevents the coordinator from finishing its ReAct loop while agents are still running. If the LLM returns text (no tool calls) but AgentRuns with `status='running'` exist, it injects a system message and redirects back to the model node via `jump_to`.
+
+**Coordinator board access**: The coordinator registers as `coordinator_{run_id}` on the board and gets `post_message`, `read_messages`, `list_participants` tools — same as specialist agents. This lets the coordinator communicate directly with agents and humans.
 
 **Dashboard panel** (Alpine.js): draggable, run selector, All/To-me filter, HTMX polling every 3s, `@` autocomplete for participants.
 
@@ -167,6 +171,10 @@ Still to do:
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
 - Login / logout page styling
+
+Known issue:
+
+- BoardNotificationMiddleware and `read_messages` have separate cursors. The middleware can re-detect a message that `read_messages` already consumed, sending a redundant `[Board: You have N new message(s)]` to the LLM. Not harmful but wasteful — consider sharing the cursor or having the middleware skip if `read_messages` was the most recent tool call.
 
 Idea:
 

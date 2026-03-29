@@ -12,14 +12,15 @@ Besides: I am a Python and Django guy. While I find TypeScript cool and intrigui
 
 The philosophy is simple: optionality and scalability, just like OpenClaw. But in Python, using Django's batteries included. We use LangChain's [Deep Agents](https://github.com/langchain-ai/deep-agents) so we can plug in any model we want.
 
-- The coordinator reads the briefings you prepare. In the spirit of top managers, it can only delegate, not do. It can't screw up your PC because it does not have the tools.
+- The coordinator reads the briefings you prepare. In the spirit of top managers, it can only delegate, not do. It can't screw up your PC because it does not have the tools. But it can talk — it has access to the **Message Board** and can communicate with agents and the human during a run.
 - The specialists do all the sweating and report back. Familiar setup in companies, I guess. But they live in a container, so they can't really screw up your PC. You can give them access to parts of your filesystem (or all of it) at your own risk. It is your choice when you create your agents.
 - One special agent, **Shenlong**, is really powerful within its container. If no other specialist fits the task, the coordinator can always call it.
 - Add skills (under `skills/`), and all agents will have access to them.
+- The **Message Board** is a shared communication channel per run. Agents, the coordinator, and you can exchange messages in real time via the dashboard. The coordinator won't finish a run while agents are still working.
 
 Django handles everything the user touches: auth, dashboards, briefing editor, run history, admin. The frontend is server-rendered HTML with the great and really cool [HTMX](https://htmx.org/) sprinkled throughout. I wanted structured persistence: reports, history, search, filtering, scheduling. That's why Django + PostgreSQL.
 
-Every specialist agent gets its own Docker container with only the tools and API keys it needs. A web scraping agent gets `web_scrape`. Shenlong gets everything including `bash` — the nuclear option. Better only grant that to stronger models you trust. Containers exit after reporting; the coordinator reads the report and moves on.
+Every specialist agent gets its own Docker container with only the tools and API keys it needs. A web scraping agent gets `web_scrape`. Shenlong gets everything including `bash` — the nuclear option. Better only grant that to stronger models you trust. Agents with `message_board` in their tools can communicate with the human and other agents during a run — the coordinator will wait for them to finish before wrapping up.
 
 ## How It Works
 
@@ -31,6 +32,7 @@ Coordinator Agent (strong model, runs in Celery worker)
     |-- reads briefing steps
     |-- lists available specialist agents
     |-- dispatches specialists by name
+    |-- communicates via Message Board (Redis Streams)
     |
     +---> Specialist Container 1 (market-researcher)
     |         |-- web_search, web_scrape, bash, memory
@@ -38,15 +40,22 @@ Coordinator Agent (strong model, runs in Celery worker)
     |         |-- writes report.json to shared volume
     |         \-- exits
     |
-    +---> Specialist Container 2 (career-scraper)
-    |         |-- career_scrape (no bash, no search)
-    |         \-- exits
+    +---> Specialist Container 2 (shenlong)
+    |         |-- web_search, web_scrape, bash, memory, message_board
+    |         |-- can message human and coordinator during run
+    |         |-- writes report.json to shared volume
+    |         \-- exits when done (coordinator waits)
+    |
+    +----< Message Board (Redis Streams) >----+
+    |         |-- human, coordinator, and agents exchange messages
+    |         |-- floating panel on dashboard with @mentions
+    |         \-- polling every 3s, autocomplete for participants
     |
     v
 Coordinator synthesizes reports -> Run.coordinator_report
     |
     v
-Dashboard shows results
+Dashboard shows results + message history
 ```
 
 ### Agents
@@ -58,7 +67,7 @@ Markdown files in `agents/`. YAML frontmatter defines the model, tools, memory, 
 name: shenlong
 description: General-purpose agent for any task.
 model: gpt-5.4
-tools: ["web_search", "web_scrape", "bash"]
+tools: ["web_search", "web_scrape", "bash", "message_board"]
 memory: true
 volumes:
   - host: "./in_and_out"
@@ -78,13 +87,14 @@ Directories in `skills/` with a `SKILL.md` file and optional sub-folders, follow
 
 Python functions in `agent_tools/`. Currently ships with:
 
-| Tool                                 | What it does        | Notes                                                                                                  |
-| ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `bash`                               | Shell execution     | Only grant to models you trust                                                                         |
-| `web_search`                         | Google search       | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
-| `web_scrape`                         | Page scraping       | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
-| `career_scrape`                      | Job listing scraper | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
-| `remember` / `recall` / `recall_all` | Persistent memory   | PostgresStore, namespaced per agent                                                                    |
+| Tool                                 | What it does          | Notes                                                                                                  |
+| ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------ |
+| `bash`                               | Shell execution       | Only grant to models you trust                                                                         |
+| `web_search`                         | Google search         | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
+| `web_scrape`                         | Page scraping         | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
+| `career_scrape`                      | Job listing scraper   | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
+| `remember` / `recall` / `recall_all` | Persistent memory     | PostgresStore, namespaced per agent                                                                    |
+| `message_board`                      | Real-time messaging   | `post_message`, `read_messages`, `list_participants` — Redis Streams, with notification middleware      |
 
 The scraping tools use ScrapingBee because that's what we use. Swapping to Browserless, Playwright, or raw requests is straightforward; each tool is a single Python file.
 
@@ -206,6 +216,8 @@ fuzzyclaw/
 │   └── market-research/
 │       └── SKILL.md
 ├── agent_tools/             # Python tools baked into agent containers
+│   ├── message_board.py     # Board tools + setup_message_board() entry point
+│   └── board_middleware.py  # BoardNotificationMiddleware (before_model)
 ├── agent_runner.py          # Container entrypoint for specialist agents
 ├── core/                    # Django app: models, views, API, scheduling, containers
 ├── templates/               # Django templates with HTMX
@@ -247,7 +259,6 @@ nanoclaw is excellent and inspired FuzzyClaw directly — especially the contain
 
 Things I want to add when time allows:
 
-- **Human in the loop** — many tasks will require human input / buy-in as they get done
 - **WhatsApp channel** — notifications and commands via WhatsApp (the infra is ready, just needs wiring)
 - **Direct agent dispatch** — talk to a specific agent one-on-one from the dashboard, no coordinator needed
 - **Stop button** — cancel a running run from the UI

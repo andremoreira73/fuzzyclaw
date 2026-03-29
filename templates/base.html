@@ -36,6 +36,10 @@
           dragY: null,
           offsetX: 0,
           offsetY: 0,
+          // Resize state
+          isResizing: false,
+          panelW: 400,
+          panelH: 500,
           // Polling intervals
           _feedInterval: null,
           _runsInterval: null,
@@ -44,6 +48,8 @@
           init() {
             const pos = JSON.parse(localStorage.getItem('boardPanelPos') || 'null');
             if (pos) { this.dragX = pos.x; this.dragY = pos.y; }
+            const size = JSON.parse(localStorage.getItem('boardPanelSize') || 'null');
+            if (size) { this.panelW = size.w; this.panelH = size.h; }
 
             // Watch panel open/close to start/stop polling
             this.$watch('$store.board.open', (open) => {
@@ -162,11 +168,11 @@
             this.startFeedPolling();
           },
 
-          // --- Drag ---
+          // --- Drag & Resize ---
           get panelStyle() {
             const x = this.dragX ?? (window.innerWidth - 420);
             const y = this.dragY ?? (window.innerHeight * 0.35);
-            return 'left:' + Math.max(0, x) + 'px;top:' + Math.max(0, y) + 'px;';
+            return 'left:' + Math.max(0, x) + 'px;top:' + Math.max(0, y) + 'px;width:' + this.panelW + 'px;height:' + this.panelH + 'px;';
           },
           startDrag(e) {
             this.isDragging = true;
@@ -183,6 +189,25 @@
             if (!this.isDragging) return;
             this.isDragging = false;
             localStorage.setItem('boardPanelPos', JSON.stringify({x: this.dragX, y: this.dragY}));
+          },
+          startResize(e) {
+            this.isResizing = true;
+            this.offsetX = e.clientX;
+            this.offsetY = e.clientY;
+          },
+          onResize(e) {
+            if (!this.isResizing) return;
+            const dw = e.clientX - this.offsetX;
+            const dh = e.clientY - this.offsetY;
+            this.panelW = Math.max(320, this.panelW + dw);
+            this.panelH = Math.max(300, this.panelH + dh);
+            this.offsetX = e.clientX;
+            this.offsetY = e.clientY;
+          },
+          stopResize() {
+            if (!this.isResizing) return;
+            this.isResizing = false;
+            localStorage.setItem('boardPanelSize', JSON.stringify({w: this.panelW, h: this.panelH}));
           },
 
           // --- Messaging ---

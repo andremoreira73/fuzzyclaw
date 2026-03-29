@@ -7,8 +7,8 @@ Alpine.js component (boardPanel) registered in base.html <head>.
 <div id="board-panel-root"
      x-data="boardPanel" x-cloak
      @keydown.escape.window="$store.board.open = false"
-     @mousemove.window="onDrag($event)"
-     @mouseup.window="stopDrag()">
+     @mousemove.window="onDrag($event); onResize($event)"
+     @mouseup.window="stopDrag(); stopResize()">
 
   {# ── Floating Panel ── #}
   <div x-show="$store.board.open"
@@ -19,8 +19,7 @@ Alpine.js component (boardPanel) registered in base.html <head>.
        x-transition:leave-start="opacity-100 scale-100"
        x-transition:leave-end="opacity-0 scale-95"
        :style="panelStyle"
-       class="fixed z-50 w-[400px] bg-white rounded-xl shadow-2xl border border-gray-200 flex flex-col"
-       style="max-height: 60vh;">
+       class="fixed z-50 bg-white rounded-xl shadow-2xl border border-gray-200 flex flex-col">
 
     {# ── Header (draggable) ── #}
     <div class="flex items-center justify-between px-4 py-3 bg-gray-900 rounded-t-xl cursor-move select-none"
@@ -71,8 +70,7 @@ Alpine.js component (boardPanel) registered in base.html <head>.
 
     {# ── Message feed ── #}
     <div id="board-feed"
-         class="flex-1 overflow-y-auto p-3 space-y-1 bg-gray-50"
-         style="min-height: 200px; max-height: calc(60vh - 160px);">
+         class="flex-1 overflow-y-auto p-3 space-y-1 bg-gray-50">
       <div class="text-center text-gray-400 text-sm py-8">
         <i class="fas fa-clipboard-list text-2xl mb-2 block"></i>
         Select a run to view messages.
@@ -106,6 +104,17 @@ Alpine.js component (boardPanel) registered in base.html <head>.
           <i class="fas fa-paper-plane"></i>
         </button>
       </form>
+    </div>
+
+    {# ── Resize handle (bottom-right corner) ── #}
+    <div @mousedown.prevent="startResize($event)"
+         class="absolute bottom-0 right-0 w-4 h-4 cursor-se-resize flex items-center justify-center"
+         style="touch-action: none;">
+      <svg class="w-3 h-3 text-gray-400" viewBox="0 0 10 10" fill="currentColor">
+        <circle cx="8" cy="8" r="1.2"/>
+        <circle cx="4.5" cy="8" r="1.2"/>
+        <circle cx="8" cy="4.5" r="1.2"/>
+      </svg>
     </div>
   </div>
 </div>

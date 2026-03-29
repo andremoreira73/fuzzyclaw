@@ -197,3 +197,5 @@ Idea:
   has an opportunity to use the same agent (and its existing context) to refine stuff.
   **Update:** Message Board makes this even more relevant — a waiting agent is a paused
   container, not a dead one.
+
+- **`wait` tool** — Agents often finish their ReAct loop instead of waiting for a human reply, because `read_messages(wait_seconds=1800)` requires the LLM to actively choose to block. A `wait` tool with explicit semantics ("idle for N seconds or until a board message arrives") could make the intent clearer and give the `BoardNotificationMiddleware` time to fire between steps. Could also serve as a general "yield and check for updates" primitive. The agent calls `wait()`, the middleware checks for messages, and the agent gets notified naturally. Related to shenlong prompting issues observed 2026-03-28/29 where the agent moves on instead of waiting for the human.

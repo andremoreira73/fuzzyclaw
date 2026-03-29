@@ -2193,7 +2193,7 @@ class BoardViewTests(TestCase):
         self.assertEqual(data['content'], 'the answer is 42')
 
     @patch('core.views._get_board_redis')
-    def test_board_reply_defaults_to_all(self, mock_get_redis):
+    def test_board_reply_defaults_to_coordinator(self, mock_get_redis):
         mock_r = self._mock_redis()
         mock_r.xrevrange.return_value = []
         mock_get_redis.return_value = mock_r
@@ -2203,8 +2203,26 @@ class BoardViewTests(TestCase):
             {'message': 'hello everyone'},
         )
         self.assertEqual(resp.status_code, 200)
+        mock_r.xadd.assert_called_once()
         data = mock_r.xadd.call_args[0][1]
-        self.assertEqual(data['to'], 'all')
+        self.assertEqual(data['to'], f'coordinator_{self.run.id}')
+
+    @patch('core.views._get_board_redis')
+    def test_board_reply_multiple_mentions(self, mock_get_redis):
+        mock_r = self._mock_redis()
+        mock_r.xrevrange.return_value = []
+        mock_get_redis.return_value = mock_r
+
+        resp = self.client.post(
+            f'/runs/{self.run.pk}/board/reply/',
+            {'message': '@agent_1 @agent_2 hello both'},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(mock_r.xadd.call_count, 2)
+        recipients = [call[0][1]['to'] for call in mock_r.xadd.call_args_list]
+        self.assertEqual(sorted(recipients), ['agent_1', 'agent_2'])
+        for call in mock_r.xadd.call_args_list:
+            self.assertEqual(call[0][1]['content'], 'hello both')
 
     @patch('core.views._get_board_redis')
     def test_board_reply_empty_returns_400(self, mock_get_redis):

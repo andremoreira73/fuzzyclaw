@@ -166,13 +166,27 @@ The coordinator updates `status`, `report`, `container_id`, etc. on Runs and Age
 Still to do:
 
 - ~~Code review fixes~~ — completed (3 rounds, 170 tests passing)
-- Message Board — stabilize (code review fixes landed, 170 tests pass, but agent still not delivering messages to board in browser testing 2026-03-25 — needs deeper investigation)
+- ~~Message Board — stabilize~~ — hardened 2026-03-28: simplified tools, middleware, coordinator guard, view gates removed
+- ~~Message Board — fix addressing~~ — done 2026-03-29: multi-mention, no-@ defaults to coordinator
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
 - Login / logout page styling
 
-Known issue:
+### Board Addressing Fix (next)
+
+**Problem:** `board_reply` only parses one `@recipient` at the start. Everything without `@` defaults to `to: all`, which means every agent and coordinator sees it. This causes agents to read messages not meant for them.
+
+**Fix:**
+1. Parse all `@agent` tokens from the message (not just the first). For each mentioned recipient, do a separate `XADD` with `to: that_recipient`.
+2. If no `@` is present, default to `coordinator_{run_id}` instead of `all`. The coordinator is the natural recipient when the human is just talking into the board.
+3. `@all` becomes an explicit broadcast — the user must type it to reach everyone.
+
+**Affected layers:** `core/views.py` (`board_reply`), Alpine.js `sendMessage()` (no change needed — message format stays the same), tests.
+
+**Status:** done (2026-03-29)
+
+Known issues:
 
 - BoardNotificationMiddleware and `read_messages` have separate cursors. The middleware can re-detect a message that `read_messages` already consumed, sending a redundant `[Board: You have N new message(s)]` to the LLM. Not harmful but wasteful — consider sharing the cursor or having the middleware skip if `read_messages` was the most recent tool call.
 

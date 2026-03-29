@@ -1,5 +1,6 @@
 """Dashboard views for FuzzyClaw web UI."""
 import logging
+import re
 from datetime import datetime, timezone
 
 import redis as redis_lib
@@ -390,26 +391,28 @@ def board_reply(request, run_pk):
     if not raw_message:
         return HttpResponse(status=400)
 
-    # Parse @recipient prefix
-    recipient = 'all'
-    content = raw_message
-    if raw_message.startswith('@'):
-        parts = raw_message.split(' ', 1)
-        recipient = parts[0][1:]  # strip the @
-        content = parts[1].strip() if len(parts) >= 2 else ''
+    # Parse @recipient mentions and extract message body.
+    # Multiple @mentions supported: "@agent_1 @agent_2 hello" sends to both.
+    # No @mentions: defaults to coordinator for this run.
+    mentions = re.findall(r'@(\S+)', raw_message)
+    content = re.sub(r'@\S+\s*', '', raw_message).strip()
 
     if not content:
         return HttpResponse(status=400)
 
+    recipients = mentions if mentions else [f"coordinator_{run.id}"]
+
     try:
         r = _get_board_redis()
         stream_key = f"fuzzyclaw:board:{run.id}"
-        r.xadd(stream_key, {
-            'from': 'human',
-            'to': recipient,
-            'content': content,
-            'ts': dj_timezone.now().isoformat(),
-        })
+        ts = dj_timezone.now().isoformat()
+        for recipient in recipients:
+            r.xadd(stream_key, {
+                'from': 'human',
+                'to': recipient,
+                'content': content,
+                'ts': ts,
+            })
     except Exception as e:
         logger.warning("board_reply: Redis write failed: %s", e)
         return HttpResponse(

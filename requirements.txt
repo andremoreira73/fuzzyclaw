@@ -22,21 +22,21 @@ django-celery-beat==2.7.0
 
 # Agent runtime
 deepagents==0.4.11
-langgraph>=1.1
-langgraph-checkpoint-postgres>=3.0
-langchain>=1.2
-langchain-anthropic>=0.3
-langchain-openai>=0.3
-langchain-google-genai>=2.1
+langgraph==1.1.2
+langgraph-checkpoint-postgres==3.0.4
+langchain==1.2.12
+langchain-anthropic==1.3.5
+langchain-openai==1.1.11
+langchain-google-genai==4.2.1
 
 # Validation
 pydantic==2.10.6
 
 # Container orchestration
-docker>=7.0
+docker==7.1.0
 
 # Utilities
 python-dotenv==1.0.1
 markdown2==2.5.3
-bleach>=6.0
-PyYAML>=6.0
+bleach==6.3.0
+PyYAML==6.0.3

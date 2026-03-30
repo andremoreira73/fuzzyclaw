@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:16
+    image: postgres@sha256:2586e2a95d1c9b31cb2967feb562948f7d364854453d703039b6efa45fe48417  # postgres:16
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
@@ -20,7 +20,7 @@ services:
       retries: 5
 
   redis:
-    image: redis:7-alpine
+    image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065  # redis:7-alpine
     ports:
       - "6380:6379"
     healthcheck:

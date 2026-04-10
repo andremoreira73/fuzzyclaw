@@ -31,20 +31,33 @@ class BriefingSerializer(serializers.ModelSerializer):
 
 
 class AgentRunSerializer(serializers.ModelSerializer):
+    """Execution-managed fields are read-only. Only ``user_notes`` is writable,
+    so the stored run history cannot be rewritten through the REST API. The
+    coordinator writes execution state through the ORM directly, not the API.
+    """
+
     class Meta:
         model = AgentRun
         fields = [
             'id', 'run', 'agent_name', 'status', 'container_id',
             'started_at', 'completed_at', 'report', 'raw_data',
+            'error_message', 'user_notes', 'created_at',
+        ]
+        read_only_fields = [
+            'id', 'run', 'agent_name', 'status', 'container_id',
+            'started_at', 'completed_at', 'report', 'raw_data',
             'error_message', 'created_at',
         ]
-        read_only_fields = ['created_at']
-        # Note: status/report/etc. are kept writable because the coordinator
-        # updates execution state via the API. Queryset scoping ensures users
-        # can only modify their own objects.
 
 
 class RunSerializer(serializers.ModelSerializer):
+    """Execution-managed fields are read-only. Only ``user_notes`` is writable.
+
+    Runs are launched via ``POST /api/briefings/{id}/launch/`` and cancelled
+    via ``POST /api/runs/{id}/cancel/``. Direct mutation of status, reports,
+    and timestamps through PATCH is not permitted — the run log is an audit
+    surface, not a user-editable document.
+    """
     agent_runs = AgentRunSerializer(many=True, read_only=True)
 
     class Meta:
@@ -52,8 +65,10 @@ class RunSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'briefing', 'status', 'started_at', 'completed_at',
             'coordinator_report', 'error_message', 'triggered_by',
-            'agent_runs', 'created_at',
+            'user_notes', 'agent_runs', 'created_at',
         ]
-        read_only_fields = ['created_at']
-        # Note: execution fields kept writable for coordinator use.
-        # Queryset scoping prevents cross-user modification.
+        read_only_fields = [
+            'id', 'briefing', 'status', 'started_at', 'completed_at',
+            'coordinator_report', 'error_message', 'triggered_by',
+            'created_at',
+        ]

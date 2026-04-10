@@ -1,7 +1,8 @@
 """Persistent memory tools backed by PostgresStore.
 
 Provides remember/recall/recall_all tools that persist across container runs.
-All data is namespaced per agent name so agents can't see each other's memories.
+Memories are namespaced by (owner_id, agent_name) so one user's memories
+never leak into another user's, even when both run the same agent.
 """
 import logging
 import os
@@ -30,9 +31,15 @@ def get_memory_store(agent_name: str):
         return None
 
 
-def build_memory_tools(store, agent_name: str):
-    """Build recall/remember tools backed by PostgresStore."""
-    namespace = (agent_name,)
+def build_memory_tools(store, agent_name: str, owner_id: str):
+    """Build recall/remember tools backed by PostgresStore.
+
+    Namespace is (owner_id, agent_name): memories are scoped per user per
+    agent. Two users running the same agent see completely separate memories.
+    """
+    if not owner_id:
+        raise ValueError("build_memory_tools requires a non-empty owner_id")
+    namespace = (owner_id, agent_name)
 
     @tool
     def remember(key: str, content: str) -> str:

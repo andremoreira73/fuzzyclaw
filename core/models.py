@@ -69,6 +69,10 @@ class Run(models.Model):
     )
     error_message = models.TextField(blank=True)
     triggered_by = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default='manual')
+    user_notes = models.TextField(
+        blank=True,
+        help_text='Free-form user annotations. Separate from the execution-managed fields above.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -109,6 +113,10 @@ class AgentRun(models.Model):
     report = models.TextField(blank=True, help_text='What this specialist reported back.')
     raw_data = models.JSONField(default=dict, blank=True, help_text='Structured data from the specialist.')
     error_message = models.TextField(blank=True)
+    user_notes = models.TextField(
+        blank=True,
+        help_text='Free-form user annotations. Separate from the execution-managed fields above.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

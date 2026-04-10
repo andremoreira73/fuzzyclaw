@@ -17,7 +17,7 @@ import logging
 import os
 import shutil
 import tempfile
-import threading
+import time
 from pathlib import Path
 
 import docker
@@ -361,12 +361,72 @@ def _count_running_containers(client) -> int:
     return len(containers)
 
 
-# In-process container counter — immune to TOCTOU race with Docker daemon.
-# _count_running_containers queries Docker but the daemon lags behind
-# container.run() calls, so rapid-fire dispatches all see count=0.
-# This lock+counter is the authoritative gate.
-_container_lock = threading.Lock()
-_container_count = 0
+# Redis-backed concurrency gate.
+#
+# A sorted set holds one entry per active slot: member=agent_run_id,
+# score=acquisition timestamp. Acquire is a Lua script that atomically
+# sweeps expired entries, counts, and inserts. Release is a ZREM. State
+# survives Celery worker restarts, and abandoned slots (crashed workers)
+# self-heal via the expiration sweep.
+_SLOT_KEY = 'fuzzyclaw:container_slots'
+
+_ACQUIRE_SLOT_LUA = """
+local key = KEYS[1]
+local cutoff = tonumber(ARGV[1])
+local max = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local member = ARGV[4]
+redis.call('ZREMRANGEBYSCORE', key, '-inf', cutoff)
+local count = redis.call('ZCARD', key)
+if count >= max then
+  return count
+end
+redis.call('ZADD', key, now, member)
+return -1
+"""
+
+
+def _slot_ttl_seconds() -> int:
+    """Upper bound on how long a slot can be held before it's swept as abandoned."""
+    hitl = int(getattr(settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800))
+    agent = int(getattr(settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600))
+    return max(hitl, agent) + 60
+
+
+def _acquire_container_slot(agent_run_id: int) -> None:
+    """Reserve a concurrency slot for this agent run.
+
+    Raises RuntimeError if the limit is reached or Redis is unavailable.
+    """
+    max_containers = int(getattr(settings, 'FUZZYCLAW_MAX_CONTAINERS', 10))
+    r = _get_redis_client()
+    if r is None:
+        raise RuntimeError(
+            "Container concurrency gate unavailable: Redis not reachable."
+        )
+    now = time.time()
+    cutoff = now - _slot_ttl_seconds()
+    result = r.eval(
+        _ACQUIRE_SLOT_LUA, 1, _SLOT_KEY,
+        cutoff, max_containers, now, str(agent_run_id),
+    )
+    if result != -1:
+        raise RuntimeError(
+            f"Container concurrency limit reached ({int(result)}/{max_containers}). "
+            "Try again later."
+        )
+
+
+def _release_container_slot(agent_run_id: int) -> None:
+    """Release a concurrency slot. Idempotent — safe to call multiple times."""
+    r = _get_redis_client()
+    if r is None:
+        logger.warning("Cannot release container slot %s: Redis unavailable", agent_run_id)
+        return
+    try:
+        r.zrem(_SLOT_KEY, str(agent_run_id))
+    except Exception as e:
+        logger.warning("Failed to release container slot %s: %s", agent_run_id, e)
 
 
 def _get_redis_client():
@@ -407,23 +467,12 @@ def start_agent_container(
             f"Image for '{agent_name}' has build error: {agent_image.build_error}"
         )
 
-    # Acquire slot via in-process counter (race-free)
-    global _container_count
-    max_containers = getattr(settings, 'FUZZYCLAW_MAX_CONTAINERS', 10)
-    with _container_lock:
-        if _container_count >= max_containers:
-            raise RuntimeError(
-                f"Container concurrency limit reached ({_container_count}/{max_containers}). "
-                "Try again later."
-            )
-        _container_count += 1
+    _acquire_container_slot(agent_run_id)
 
     try:
         return _start_agent_container_inner(agent_name, task_description, agent_run_id, run_id, agent_image)
     except Exception:
-        # Roll back the slot on any failure before containers.run succeeds
-        with _container_lock:
-            _container_count = max(0, _container_count - 1)
+        _release_container_slot(agent_run_id)
         raise
 
 
@@ -500,6 +549,17 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         database_url = os.environ.get('DATABASE_URL', '')
         if database_url:
             env['DATABASE_URL'] = database_url
+        # Memory namespace owner — scopes (owner_id, agent_name) so one user's
+        # memories never leak into another's.
+        from .models import AgentRun
+        try:
+            agent_run = AgentRun.objects.select_related('run__briefing__owner').get(pk=agent_run_id)
+            env['OWNER_ID'] = str(agent_run.run.briefing.owner_id)
+        except AgentRun.DoesNotExist:
+            logger.warning(
+                "AgentRun %d not found while resolving OWNER_ID — memory namespace will fall back",
+                agent_run_id,
+            )
 
     # Volumes — must use HOST paths since Docker daemon runs on the host
     host_skills = _to_host_path(settings.FUZZYCLAW_SKILLS_DIR)
@@ -623,7 +683,7 @@ def get_container_status(agent_run_id: int, agent_name: str) -> str:
 def cleanup_run(run_id: int) -> dict:
     """Clean up all resources for a run: containers, comms dirs, Redis stream.
 
-    Also releases container slots from the in-process concurrency counter.
+    Also releases container slots held by any unfinalized AgentRuns.
 
     Returns {'containers_removed': int, 'comms_removed': int, 'stream_deleted': bool}.
     """
@@ -634,11 +694,8 @@ def cleanup_run(run_id: int) -> dict:
     agent_runs = AgentRun.objects.filter(run_id=run_id)
 
     # Release any remaining container slots (e.g. agents that were never read)
-    unread_count = agent_runs.filter(status='running').count()
-    if unread_count:
-        global _container_count
-        with _container_lock:
-            _container_count = max(0, _container_count - unread_count)
+    for ar in agent_runs.filter(status='running'):
+        _release_container_slot(ar.id)
 
     # Remove Docker containers
     try:

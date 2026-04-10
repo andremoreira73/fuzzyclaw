@@ -54,112 +54,107 @@ def list_available_agents() -> str:
     return json.dumps(result, indent=2)
 
 
-@tool
-def manage_schedule(briefing_id: int, schedule_text: str) -> str:
-    """Create, update, or remove a briefing's automatic schedule.
+def make_manage_schedule(briefing):
+    """Build a manage_schedule tool bound to a specific briefing.
 
-    Pass the schedule as natural language (e.g. "every weekday at 9am",
-    "daily at midnight", "every Monday at 2pm EST"). To remove a schedule,
-    pass an empty string.
-
-    Args:
-        briefing_id: The Briefing ID to schedule.
-        schedule_text: Natural language schedule, or empty string to remove.
+    The tool cannot mutate schedules for any other briefing — the ID comes
+    from the closure, not the model's arguments.
     """
-    from .models import Briefing
-    from .scheduling import get_schedule_status, sync_schedule
+    @tool
+    def manage_schedule(schedule_text: str) -> str:
+        """Create, update, or remove the current briefing's automatic schedule.
 
-    try:
-        briefing = Briefing.objects.get(pk=briefing_id)
-    except Briefing.DoesNotExist:
-        return f"Error: Briefing {briefing_id} not found."
+        Pass the schedule as natural language (e.g. "every weekday at 9am",
+        "daily at midnight", "every Monday at 2pm EST"). To remove a schedule,
+        pass an empty string.
 
-    # Update the schedule_text on the briefing
-    briefing.schedule_text = schedule_text.strip()
-    briefing.save(update_fields=['schedule_text'])
+        Args:
+            schedule_text: Natural language schedule, or empty string to remove.
+        """
+        from .scheduling import get_schedule_status, sync_schedule
 
-    try:
-        result = sync_schedule(briefing)
-    except Exception as e:
-        return f"Error scheduling briefing {briefing_id}: {e}"
+        briefing.schedule_text = schedule_text.strip()
+        briefing.save(update_fields=['schedule_text'])
 
-    action = result.get('action', 'none')
-    if action == 'error':
-        return f"Error: {result.get('error', 'unknown')}"
-    if action == 'removed':
-        return f"Schedule removed for briefing {briefing_id}."
-    if action in ('created', 'updated'):
-        return f"Schedule {action}: {result.get('human_readable', schedule_text)}"
-    if action in ('paused', 'resumed', 'unchanged'):
-        status = get_schedule_status(briefing)
-        cron = status['cron'] if status else ''
-        return f"Schedule {action} for briefing {briefing_id}. Cron: {cron}"
-    return f"Schedule action: {action}"
+        try:
+            result = sync_schedule(briefing)
+        except Exception as e:
+            return f"Error scheduling briefing: {e}"
+
+        action = result.get('action', 'none')
+        if action == 'error':
+            return f"Error: {result.get('error', 'unknown')}"
+        if action == 'removed':
+            return "Schedule removed."
+        if action in ('created', 'updated'):
+            return f"Schedule {action}: {result.get('human_readable', schedule_text)}"
+        if action in ('paused', 'resumed', 'unchanged'):
+            status = get_schedule_status(briefing)
+            cron = status['cron'] if status else ''
+            return f"Schedule {action}. Cron: {cron}"
+        return f"Schedule action: {action}"
+
+    return manage_schedule
 
 
-@tool
-def dispatch_specialist(agent_name: str, task_description: str, run_id: int) -> str:
-    """Dispatch a specialist agent in a Docker container. Non-blocking — returns
-    immediately with the agent_run_id. Use check_reports to poll for completion,
-    then read_report to retrieve the result.
+def make_dispatch_specialist(run):
+    """Build a dispatch_specialist tool bound to the active run.
 
-    Args:
-        agent_name: The name of the specialist agent to dispatch.
-        task_description: What the specialist should do.
-        run_id: The current Run ID to associate the AgentRun with.
+    The tool cannot dispatch into any other run — the run_id comes from the
+    closure, not the model's arguments.
     """
-    from django.utils import timezone
+    @tool
+    def dispatch_specialist(agent_name: str, task_description: str) -> str:
+        """Dispatch a specialist agent in a Docker container. Non-blocking — returns
+        immediately with the agent_run_id. Use check_reports to poll for completion,
+        then read_report to retrieve the result.
 
-    from .containers import start_agent_container
-    from .models import AgentRun, Run
-    from .registry import AgentNotFound, get_agent
+        Args:
+            agent_name: The name of the specialist agent to dispatch.
+            task_description: What the specialist should do.
+        """
+        from .containers import start_agent_container
+        from .models import AgentRun
 
-    # Validate agent exists
-    try:
-        get_agent(agent_name)
-    except AgentNotFound:
-        return f"Error: Agent '{agent_name}' not found."
+        try:
+            get_agent(agent_name)
+        except AgentNotFound:
+            return f"Error: Agent '{agent_name}' not found."
 
-    # Validate run exists
-    try:
-        run = Run.objects.get(pk=run_id)
-    except Run.DoesNotExist:
-        return f"Error: Run {run_id} not found."
-
-    # Create AgentRun record as 'pending' — only transitions to 'running'
-    # after the container actually starts. This prevents phantom records
-    # from polluting check_reports when the concurrency limit rejects a dispatch.
-    agent_run = AgentRun.objects.create(
-        run=run,
-        agent_name=agent_name,
-        status='pending',
-        started_at=timezone.now(),
-    )
-
-    try:
-        container_id = start_agent_container(
+        # Create AgentRun record as 'pending' — only transitions to 'running'
+        # after the container actually starts. This prevents phantom records
+        # from polluting check_reports when the concurrency limit rejects a dispatch.
+        agent_run = AgentRun.objects.create(
+            run=run,
             agent_name=agent_name,
-            task_description=task_description,
-            agent_run_id=agent_run.id,
-            run_id=run_id,
+            status='pending',
+            started_at=timezone.now(),
         )
 
-        agent_run.status = 'running'
-        agent_run.container_id = container_id
-        agent_run.save(update_fields=['status', 'container_id'])
+        try:
+            container_id = start_agent_container(
+                agent_name=agent_name,
+                task_description=task_description,
+                agent_run_id=agent_run.id,
+                run_id=run.id,
+            )
 
-        logger.info(
-            "Dispatched specialist '%s' as agent_run_id=%d (container=%s)",
-            agent_name, agent_run.id, container_id[:12],
-        )
-        return f"Dispatched '{agent_name}' as agent_run_id={agent_run.id}"
+            agent_run.status = 'running'
+            agent_run.container_id = container_id
+            agent_run.save(update_fields=['status', 'container_id'])
 
-    except Exception as e:
-        # Delete the pending record — coordinator already gets the error
-        # from the return value, no need to leave a phantom in the DB.
-        agent_run.delete()
-        logger.error("Specialist '%s' dispatch failed: %s", agent_name, e)
-        return f"Specialist '{agent_name}' dispatch failed: {e}"
+            logger.info(
+                "Dispatched specialist '%s' as agent_run_id=%d (container=%s)",
+                agent_name, agent_run.id, container_id[:12],
+            )
+            return f"Dispatched '{agent_name}' as agent_run_id={agent_run.id}"
+
+        except Exception as e:
+            agent_run.delete()
+            logger.error("Specialist '%s' dispatch failed: %s", agent_name, e)
+            return f"Specialist '{agent_name}' dispatch failed: {e}"
+
+    return dispatch_specialist
 
 
 @tool
@@ -297,15 +292,14 @@ def _effective_timeout(agent_run, agent_timeout: int, hitl_timeout: int) -> int:
 
 def _finalize_agent_run(agent_run, status: str, error_msg: str, now):
     """Mark an AgentRun as done and release its container slot."""
-    import core.containers as _containers_mod
+    from .containers import _release_container_slot
 
     agent_run.status = status
     agent_run.error_message = error_msg
     agent_run.completed_at = now
     agent_run.save(update_fields=['status', 'error_message', 'completed_at'])
 
-    with _containers_mod._container_lock:
-        _containers_mod._container_count = max(0, _containers_mod._container_count - 1)
+    _release_container_slot(agent_run.id)
 
     logger.info("Finalized agent_run %d (%s): %s", agent_run.id, agent_run.agent_name, status)
 
@@ -354,9 +348,8 @@ def read_report(agent_run_id: int) -> str:
     report_data, exit_code = read_agent_report(agent_run_id)
 
     # Release container slot — this agent is done regardless of outcome
-    import core.containers as _containers_mod
-    with _containers_mod._container_lock:
-        _containers_mod._container_count = max(0, _containers_mod._container_count - 1)
+    from .containers import _release_container_slot
+    _release_container_slot(agent_run_id)
 
     if exit_code == 0:
         report_text = report_data.get('report', '')
@@ -381,22 +374,24 @@ def read_report(agent_run_id: int) -> str:
         return f"Specialist '{agent_run.agent_name}' failed: {error_msg}"
 
 
-@tool
-def submit_coordinator_report(run_id: int, report: str) -> str:
-    """Submit the final coordinator synthesis report for a run.
+def make_submit_coordinator_report(run):
+    """Build a submit_coordinator_report tool bound to the active run.
 
-    Args:
-        run_id: The Run ID to update.
-        report: The final synthesis report text.
+    The tool cannot finalize any other run — the run_id comes from the
+    closure, not the model's arguments.
     """
-    from .models import Run
+    @tool
+    def submit_coordinator_report(report: str) -> str:
+        """Submit the final coordinator synthesis report for the current run.
 
-    try:
-        run = Run.objects.get(pk=run_id)
+        Args:
+            report: The final synthesis report text.
+        """
+        run.refresh_from_db()
         run.coordinator_report = report
         run.status = 'completed'
         run.completed_at = timezone.now()
         run.save(update_fields=['coordinator_report', 'status', 'completed_at'])
         return "Report submitted successfully."
-    except Run.DoesNotExist:
-        return f"Error: Run {run_id} not found."
+
+    return submit_coordinator_report

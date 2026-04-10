@@ -13,3 +13,9 @@ class ProfileForm(forms.ModelForm):
     class Meta:
         model = User
         fields = ['username', 'first_name', 'last_name', 'email']
+
+    def clean_email(self):
+        email = self.cleaned_data['email']
+        if email and User.objects.filter(email=email).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError('This email address is already in use.')
+        return email

@@ -17,13 +17,14 @@ RUN pip install --no-cache-dir -r requirements-agent.txt
 COPY agent_runner.py .
 COPY agent_tools/ ./agent_tools/
 
-# Symlink so relative "data/" paths from /app also resolve to the /data mount
+# Fallback /data dir (used when no volume is mounted) + symlink for relative paths
+RUN mkdir -p /data
 RUN ln -s /data /app/data
 
 # Non-root user
 RUN groupadd -g 1000 appuser && \
     useradd -u 1000 -g 1000 -m appuser && \
-    chown -R appuser:appuser /app
+    chown -R appuser:appuser /app /data
 
 USER appuser
 

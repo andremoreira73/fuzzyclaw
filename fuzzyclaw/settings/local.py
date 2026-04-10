@@ -2,6 +2,12 @@ import os
 
 import dj_database_url
 
+import os as _os  # noqa: F811 — re-import needed before base wildcard
+
+# Dev-only SECRET_KEY fallback — base.py requires DJANGO_SECRET_KEY to be set.
+# This ensures local dev works without .env while prod/compose crash on missing key.
+_os.environ.setdefault('DJANGO_SECRET_KEY', 'insecure-dev-key-change-me')
+
 from .base import *  # noqa: F401, F403
 
 DEBUG = True

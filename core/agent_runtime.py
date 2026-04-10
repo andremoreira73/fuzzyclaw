@@ -30,8 +30,7 @@ def get_model(model_name: str):
         from langchain_google_genai import ChatGoogleGenerativeAI
         return ChatGoogleGenerativeAI(model=model_name, **defaults)
     else:
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name, **defaults)
+        raise ValueError(f"Unknown model prefix: '{model_name}'. Register it in FUZZYCLAW_MODELS.")
 
 
 def _get_coordinator_redis():

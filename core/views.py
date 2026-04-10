@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 from .registry import get_available_agents, get_available_skills
 
 
+def _valid_model(model_name: str) -> bool:
+    """Check if model_name is a registered coordinator model."""
+    return model_name in settings.FUZZYCLAW_MODELS
+
+
 # ---------------------------------------------------------------------------
 # Dashboard
 # ---------------------------------------------------------------------------
@@ -67,11 +72,15 @@ def briefing_list(request):
 @login_required
 def briefing_create(request):
     if request.method == 'POST':
+        model_choice = request.POST.get('coordinator_model', 'gemini-2.5-pro')
+        if not _valid_model(model_choice):
+            messages.error(request, f'Unknown model: {model_choice}')
+            return redirect('core:briefing_create')
         briefing = Briefing.objects.create(
             owner=request.user,
             title=request.POST.get('title', 'Untitled Briefing'),
             content=request.POST.get('content', ''),
-            coordinator_model=request.POST.get('coordinator_model', 'gemini-2.5-pro'),
+            coordinator_model=model_choice,
             schedule_text=request.POST.get('schedule_text', ''),
             is_active=request.POST.get('is_active') == 'on',
         )
@@ -125,7 +134,9 @@ def briefing_save(request, pk):
     briefing = get_object_or_404(Briefing, pk=pk, owner=request.user)
     briefing.title = request.POST.get('title', briefing.title)
     briefing.content = request.POST.get('content', briefing.content)
-    briefing.coordinator_model = request.POST.get('coordinator_model', briefing.coordinator_model)
+    model_choice = request.POST.get('coordinator_model', briefing.coordinator_model)
+    if model_choice and _valid_model(model_choice):
+        briefing.coordinator_model = model_choice
     briefing.schedule_text = request.POST.get('schedule_text', briefing.schedule_text)
     briefing.save()
     messages.success(request, 'Briefing saved.')
@@ -155,7 +166,7 @@ def briefing_toggle(request, pk):
         briefing.schedule_text = schedule_text.strip()
         update_fields.append('schedule_text')
     coordinator_model = request.POST.get('coordinator_model')
-    if coordinator_model is not None:
+    if coordinator_model is not None and _valid_model(coordinator_model):
         briefing.coordinator_model = coordinator_model
         update_fields.append('coordinator_model')
     briefing.save(update_fields=update_fields)
@@ -180,7 +191,7 @@ def briefing_model(request, pk):
     """HTMX endpoint: save coordinator_model and return the updated select partial."""
     briefing = get_object_or_404(Briefing, pk=pk, owner=request.user)
     coordinator_model = request.POST.get('coordinator_model', briefing.coordinator_model)
-    if coordinator_model != briefing.coordinator_model:
+    if coordinator_model != briefing.coordinator_model and _valid_model(coordinator_model):
         briefing.coordinator_model = coordinator_model
         briefing.save(update_fields=['coordinator_model'])
     html = render_to_string('core/partials/model_select.html', {
@@ -204,7 +215,7 @@ def briefing_schedule(request, pk):
         briefing.schedule_text = schedule_text
         update_fields.append('schedule_text')
     coordinator_model = request.POST.get('coordinator_model')
-    if coordinator_model and coordinator_model != briefing.coordinator_model:
+    if coordinator_model and coordinator_model != briefing.coordinator_model and _valid_model(coordinator_model):
         briefing.coordinator_model = coordinator_model
         update_fields.append('coordinator_model')
     if update_fields:

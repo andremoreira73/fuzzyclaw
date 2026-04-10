@@ -109,19 +109,28 @@ def parse_agent_file(filepath: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def get_model(model_name: str):
-    """Instantiate a LangChain chat model from a model name string."""
+    """Instantiate a LangChain chat model from a model name string.
+
+    Reads MODEL_DEFAULTS env var (JSON) injected by containers.py to match
+    coordinator model configuration (temperature, reasoning_effort, etc.).
+    """
+    defaults_raw = os.environ.get('MODEL_DEFAULTS', '{}')
+    try:
+        defaults = json.loads(defaults_raw)
+    except json.JSONDecodeError:
+        defaults = {}
+
     if model_name.startswith('claude'):
         from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model=model_name)
+        return ChatAnthropic(model=model_name, **defaults)
     elif model_name.startswith('gpt'):
         from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name)
+        return ChatOpenAI(model=model_name, **defaults)
     elif model_name.startswith('gemini'):
         from langchain_google_genai import ChatGoogleGenerativeAI
-        return ChatGoogleGenerativeAI(model=model_name)
+        return ChatGoogleGenerativeAI(model=model_name, **defaults)
     else:
-        from langchain_openai import ChatOpenAI
-        return ChatOpenAI(model=model_name)
+        raise ValueError(f"Unknown model prefix: '{model_name}'")
 
 
 # ---------------------------------------------------------------------------
@@ -209,8 +218,8 @@ Complete the task given to you and return a clear, structured report of your fin
                 model=model,
                 tools=agent_tools,
                 system_prompt=system_prompt,
-                backend=FilesystemBackend(root_dir="/", virtual_mode=True),
-                skills=['/skills'],
+                backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
+                skills=['/app/skills'],
                 middleware=middleware,
             )
 

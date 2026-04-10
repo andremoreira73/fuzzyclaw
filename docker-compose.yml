@@ -51,7 +51,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
       - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - PYTHONUNBUFFERED=1
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -88,7 +88,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
       - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - PYTHONUNBUFFERED=1
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
@@ -131,7 +131,7 @@ services:
       - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_dev}
       - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
-      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY:-dev-secret-key}
+      - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
       - PYTHONUNBUFFERED=1
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0

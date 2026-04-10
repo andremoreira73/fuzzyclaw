@@ -475,14 +475,15 @@
                 <a href="{% url 'admin:index' %}"
                    class="text-gray-600 hover:text-gray-900 font-medium text-sm">Admin</a>
               {% endif %}
-              <div class="relative" x-data="{ open: false }">
+              <div class="relative" x-data="{ open: false }" @keydown.escape="open = false">
                 <button @click="open = !open" @click.outside="open = false"
+                        :aria-expanded="open" aria-haspopup="true"
                         class="flex items-center text-gray-600 hover:text-gray-900 font-medium text-sm transition-colors focus:outline-none">
                   <i class="fas fa-user-circle mr-1"></i>
                   {{ user.username }}
                   <i class="fas fa-chevron-down ml-1 text-xs"></i>
                 </button>
-                <div x-show="open" x-cloak
+                <div x-show="open" x-cloak role="menu"
                      x-transition:enter="transition ease-out duration-100"
                      x-transition:enter-start="opacity-0 scale-95"
                      x-transition:enter-end="opacity-100 scale-100"
@@ -490,12 +491,12 @@
                      x-transition:leave-start="opacity-100 scale-100"
                      x-transition:leave-end="opacity-0 scale-95"
                      class="absolute right-0 mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-100 py-1 z-50">
-                  <a href="{% url 'core:profile' %}"
+                  <a href="{% url 'core:profile' %}" role="menuitem"
                      class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
                     <i class="fas fa-user-cog mr-2 text-gray-400"></i> Profile
                   </a>
                   <div class="border-t border-gray-100"></div>
-                  <a href="{% url 'core:logout_confirm' %}"
+                  <a href="{% url 'core:logout_confirm' %}" role="menuitem"
                      class="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 transition-colors">
                     <i class="fas fa-sign-out-alt mr-2 text-gray-400"></i> Sign Out
                   </a>

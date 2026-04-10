@@ -458,6 +458,12 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         'FUZZYCLAW_AGENT_TIMEOUT': str(getattr(settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)),
     }
 
+    # Pass model defaults so specialist get_model() matches coordinator behavior
+    model_cfg = settings.FUZZYCLAW_MODELS.get(model_name, {})
+    model_defaults = model_cfg.get('defaults', {})
+    if model_defaults:
+        env['MODEL_DEFAULTS'] = json.dumps(model_defaults)
+
     # Pass only the needed API key
     if env_key:
         key_value = os.environ.get(env_key, '')

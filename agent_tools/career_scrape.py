@@ -45,6 +45,11 @@ def scrape_career_page(url: str) -> str:
     """
     from bs4 import BeautifulSoup
 
+    from .url_validation import validate_url
+    error = validate_url(url)
+    if error:
+        return f"URL blocked (SSRF protection): {error}"
+
     api_key = os.environ.get("SCRAPINGBEE_API_KEY")
 
     if api_key:

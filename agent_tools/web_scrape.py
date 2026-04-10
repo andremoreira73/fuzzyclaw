@@ -35,6 +35,11 @@ def scrape_url(url: str) -> str:
     Uses ScrapingBee if API key is available, falls back to direct requests.
     Returns cleaned text suitable for LLM consumption.
     """
+    from .url_validation import validate_url
+    error = validate_url(url)
+    if error:
+        return f"URL blocked (SSRF protection): {error}"
+
     api_key = os.environ.get("SCRAPINGBEE_API_KEY")
 
     if api_key:

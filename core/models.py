@@ -69,6 +69,11 @@ class Run(models.Model):
     )
     error_message = models.TextField(blank=True)
     triggered_by = models.CharField(max_length=20, choices=TRIGGER_CHOICES, default='manual')
+    celery_task_id = models.CharField(
+        max_length=100,
+        blank=True,
+        help_text='ID of the launch_coordinator Celery task. Used by the cancel action to revoke the task.',
+    )
     user_notes = models.TextField(
         blank=True,
         help_text='Free-form user annotations. Separate from the execution-managed fields above.',

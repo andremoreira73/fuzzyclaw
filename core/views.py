@@ -87,11 +87,11 @@ def briefing_create(request):
         messages.success(request, f'Briefing "{briefing.title}" created.')
 
         if 'launch' in request.POST:
+            from .tasks import launch_run
             run = Run.objects.create(
                 briefing=briefing, status='pending', triggered_by='manual',
             )
-            from .tasks import launch_coordinator
-            launch_coordinator.delay(run.id)
+            launch_run(run)
             messages.info(request, f'Run #{run.id} launched.')
             return redirect('core:run_detail', pk=run.pk)
 
@@ -142,11 +142,11 @@ def briefing_save(request, pk):
     messages.success(request, 'Briefing saved.')
 
     if 'launch' in request.POST:
+        from .tasks import launch_run
         run = Run.objects.create(
             briefing=briefing, status='pending', triggered_by='manual',
         )
-        from .tasks import launch_coordinator
-        launch_coordinator.delay(run.id)
+        launch_run(run)
         messages.info(request, f'Run #{run.id} launched.')
         return redirect('core:run_detail', pk=run.pk)
 
@@ -239,12 +239,12 @@ def briefing_schedule(request, pk):
 @login_required
 @require_POST
 def briefing_launch(request, pk):
+    from .tasks import launch_run
     briefing = get_object_or_404(Briefing, pk=pk, owner=request.user)
     run = Run.objects.create(
         briefing=briefing, status='pending', triggered_by='manual',
     )
-    from .tasks import launch_coordinator
-    launch_coordinator.delay(run.id)
+    launch_run(run)
     messages.info(request, f'Run #{run.id} launched for "{briefing.title}".')
     return redirect('core:run_detail', pk=run.pk)
 

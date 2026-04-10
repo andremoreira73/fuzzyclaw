@@ -122,11 +122,18 @@ If any are missing, tell the user what to install and stop.
 ```bash
 cp .env.example .env
 ```
-Then tell the user: "Edit `.env` and add your API keys. You need at least one LLM provider (OPENAI_API_KEY, GOOGLE_API_KEY, or ANTHROPIC_API_KEY). Also set DB_PASSWORD, POSTGRES_DB, POSTGRES_USER, and DJANGO_SECRET_KEY."
+Then tell the user: "Edit `.env` and add your API keys. You need at least one LLM provider (OPENAI_API_KEY, GOOGLE_API_KEY, or ANTHROPIC_API_KEY). Also set DB_PASSWORD, POSTGRES_DB, POSTGRES_USER, and DJANGO_SECRET_KEY. ScrapingBee and LangSmith keys are optional."
 
 **Do NOT proceed until the user confirms `.env` is configured.** Never write API keys yourself.
 
-### 2. Start platform services
+### 2. Docker socket GID
+The `web` and `celery` containers need access to the Docker socket to launch agent containers. Check the host's socket GID and set it in `.env`:
+```bash
+stat -c '%g' /var/run/docker.sock    # check the GID — set DOCKER_GID in .env to this value
+```
+The default is `983`. Common values: 999 (Ubuntu/Debian), 974 (Fedora). macOS Docker Desktop handles this automatically.
+
+### 3. Start platform services
 ```bash
 docker compose up -d
 ```
@@ -135,24 +142,24 @@ Wait for all services to be healthy. Verify:
 docker compose ps    # all 5 services should be running: db, redis, web, celery, celery-beat
 ```
 
-### 3. Run migrations (usually automatic, but verify)
+### 4. Run migrations (usually automatic, but verify)
 ```bash
 docker compose exec web python manage.py migrate
 ```
 
-### 4. Create superuser
+### 5. Create superuser
 ```bash
 docker compose exec web python manage.py createsuperuser
 ```
 The user needs to enter username/password interactively. Tell them to run this command themselves with `!` prefix if needed.
 
-### 5. Build agent Docker images
+### 6. Build agent Docker images
 ```bash
 docker compose exec web python manage.py sync_images
 ```
 This builds the base image (~437MB, takes a few minutes first time) and per-agent thin layers (sub-second each).
 
-### 6. Verify
+### 7. Verify
 ```bash
 docker compose exec web python manage.py check_agents    # validates agent .md files
 docker compose exec web python manage.py check_skills    # validates skill directories

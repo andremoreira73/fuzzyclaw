@@ -4,23 +4,38 @@
 
 # FuzzyClaw
 
-FuzzyClaw is my personal take on how I want my agents to work, very much inspired by Steinberg and his brilliant [**OpenClaw**](https://github.com/openclaw/openclaw) and by [**nanoclaw**](https://github.com/qwibitai/nanoclaw) from Qwibit.ai. I thought NanoClaw with its container philosophy would be my thing, but it was limited - as far as I could tell - to use Claude as agents. I love Claude, but I wanted more optionality.
+**Multi-agent orchestration for people who want a real control center, not just a chat box.**
 
-Besides: I am a Python and Django guy. While I find TypeScript cool and intriguing, and talking to my agents via WhatsApp super amusing, it turns out I actually wanted my good old dashboard where I can simply get stuff organized. The "briefings" (prompts!) and results from agents' work live happily in a PostgreSQL database (because, why not?). Besides, I want to schedule stuff as we go or let the coordinator do it if it thinks it should. But no cron, please.
+FuzzyClaw is a Python-first agent framework built with **Django**, **PostgreSQL**, and **Docker**. It lets you run a coordinator plus isolated specialist agents, manage structured briefings, track runs, schedule recurring work, and keep humans in the loop through a shared message board.
+
+Unlike node-based workflow tools, FuzzyClaw is built around **autonomous tool-using agents** that run inside their own containers with their own model, tools, memory, and volume access. It combines that agent runtime with a persistent Django dashboard and structured operational state in PostgreSQL.
+
+FuzzyClaw uses LangChain's [**Deep Agents**](https://github.com/langchain-ai/deep-agents), so model choice is not tied to a single provider. Different agents can use different models depending on cost, speed, or task complexity.
+
+It is heavily inspired by [**OpenClaw**](https://github.com/openclaw/openclaw) and [**nanoclaw**](https://github.com/qwibitai/nanoclaw), especially the emphasis on delegation, optionality, and agent isolation — but rebuilt around a Django-native workflow that feels at home in Python-heavy projects.
+
+## Why FuzzyClaw?
+
+- **Coordinator + specialists** — one agent delegates, specialists execute
+- **Docker-isolated specialists** — agents run in containers, not loose on your machine
+- **Human-in-the-loop** — talk to agents while a run is still happening
+- **Persistent by design** — briefings, reports, history, search, and scheduling live in PostgreSQL
+- **Django-native** — auth, admin, dashboards, and workflows included
+- **Model-flexible** — use the model that fits each agent
 
 ## Philosophy
 
-The philosophy is simple: optionality and scalability, just like OpenClaw. But in Python, using Django's batteries included. We use LangChain's [Deep Agents](https://github.com/langchain-ai/deep-agents) so we can plug in any model we want.
+FuzzyClaw is built around three ideas: **delegation**, **isolation**, and **operational clarity**.
 
-- The coordinator reads the briefings you prepare. In the spirit of top managers, it can only delegate, not do. It can't screw up your PC because it does not have the tools. But it can talk — it has access to the **Message Board** and can communicate with agents and the human during a run.
-- The specialists do all the sweating and report back. Familiar setup in companies, I guess. But they live in a container, so they can't really screw up your PC. You can give them access to parts of your filesystem (or all of it) at your own risk. It is your choice when you create your agents.
-- One special agent, **Shenlong**, is really powerful within its container. If no other specialist fits the task, the coordinator can always call it.
-- Add skills (under `skills/`), and all agents will have access to them.
-- The **Message Board** is a shared communication channel per run. Agents, the coordinator, and you can exchange messages in real time via the dashboard. The coordinator won't finish a run while agents are still working.
+- The **coordinator** reads the briefing, breaks work into steps, and delegates. It does not use execution tools directly.
+- The **specialists** do the actual work. Each runs in its own Docker container with only the tools and filesystem access it needs.
+- **Shenlong** is the fallback generalist. When no specialist is a good fit, the coordinator can call Shenlong.
+- The **Message Board** is the shared communication layer for each run, so agents, coordinator, and human can coordinate in real time.
+- **Skills** are shared capabilities under `skills/` that all agents can use when relevant.
 
-Django handles everything the user touches: auth, dashboards, briefing editor, run history, admin. The frontend is server-rendered HTML with the great and really cool [HTMX](https://htmx.org/) sprinkled throughout. I wanted structured persistence: reports, history, search, filtering, scheduling. That's why Django + PostgreSQL.
+Django handles everything user-facing: authentication, dashboards, the briefing editor, run history, admin, and scheduling. The frontend is server-rendered HTML with [**HTMX**](https://htmx.org/) where it makes sense.
 
-Every specialist agent gets its own Docker container with only the tools and API keys it needs. A web scraping agent gets `web_scrape`. Shenlong gets everything including `bash` — the nuclear option. Better only grant that to stronger models you trust. Agents with `message_board` in their tools can communicate with the human and other agents during a run — the coordinator will wait for them to finish before wrapping up.
+The result is a system that feels less like an agent demo and more like an operational workspace for running real agent workflows.
 
 ## How It Works
 
@@ -87,14 +102,14 @@ Directories in `skills/` with a `SKILL.md` file and optional sub-folders, follow
 
 Python functions in `agent_tools/`. Currently ships with:
 
-| Tool                                 | What it does          | Notes                                                                                                  |
-| ------------------------------------ | --------------------- | ------------------------------------------------------------------------------------------------------ |
-| `bash`                               | Shell execution       | Only grant to models you trust                                                                         |
-| `web_search`                         | Google search         | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
-| `web_scrape`                         | Page scraping         | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
-| `career_scrape`                      | Job listing scraper   | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
-| `remember` / `recall` / `recall_all` | Persistent memory     | PostgresStore, namespaced per agent                                                                    |
-| `message_board`                      | Real-time messaging   | `post_message`, `read_messages`, `list_participants` — Redis Streams, with notification middleware      |
+| Tool                                 | What it does        | Notes                                                                                                  |
+| ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------ |
+| `bash`                               | Shell execution     | Only grant to models you trust                                                                         |
+| `web_search`                         | Google search       | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
+| `web_scrape`                         | Page scraping       | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
+| `career_scrape`                      | Job listing scraper | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
+| `remember` / `recall` / `recall_all` | Persistent memory   | PostgresStore, namespaced per agent                                                                    |
+| `message_board`                      | Real-time messaging | `post_message`, `read_messages`, `list_participants` — Redis Streams, with notification middleware     |
 
 The scraping tools use ScrapingBee because that's what we use. Swapping to Browserless, Playwright, or raw requests is straightforward; each tool is a single Python file.
 
@@ -160,7 +175,14 @@ cd fuzzyclaw
 cp .env.example .env        # edit this — add your API keys and set DB credentials
 ```
 
-> **Important:** Edit `.env` before proceeding. You need at least `DB_PASSWORD`, `DJANGO_SECRET_KEY`, and one LLM API key (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `ANTHROPIC_API_KEY`).
+> **Important:** Edit `.env` before proceeding. You need at least `DB_PASSWORD`, `DJANGO_SECRET_KEY`, and one LLM API key (`OPENAI_API_KEY`, `GOOGLE_API_KEY`, or `ANTHROPIC_API_KEY`). ScrapingBee and LangSmith keys are optional — see comments in `.env.example`.
+
+```bash
+# Check your Docker socket GID and set it in .env
+stat -c '%g' /var/run/docker.sock   # → set DOCKER_GID in .env to this value
+```
+
+> **Why?** The `web` and `celery` containers need to talk to the Docker socket to launch agent containers. The socket is group-owned by a GID that varies by distro (983 on Arch, 999 on Ubuntu, 974 on Fedora, etc.). `DOCKER_GID` in `.env` tells the containers which group to join. If it doesn't match, agent launches will fail with a permission error. macOS Docker Desktop handles this automatically.
 
 ```bash
 # Start the platform (PostgreSQL, Redis, web, Celery, Celery Beat)
@@ -176,7 +198,7 @@ docker compose exec web python manage.py createsuperuser
 open http://localhost:8200
 ```
 
-See examples/briefings/ for sample briefings to get started.
+See [`examples/briefings/`](examples/briefings/) for sample briefings — from single-agent tasks to multi-agent parallel orchestration. Copy one into the briefing editor to try it out.
 
 ### Using Claude Code
 

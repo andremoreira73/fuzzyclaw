@@ -36,7 +36,7 @@ services:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
     group_add:
-      - "983"
+      - "${DOCKER_GID:-983}"
     ports:
       - "8200:8200"
     depends_on:
@@ -61,7 +61,6 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
-      - CLAW_API_TOKEN=${CLAW_API_TOKEN}
 
       # Container orchestration — host path for Docker volume mounts
       - HOST_PROJECT_DIR=${PWD}
@@ -76,7 +75,7 @@ services:
       - .:/app
       - /var/run/docker.sock:/var/run/docker.sock
     group_add:
-      - "983"
+      - "${DOCKER_GID:-983}"
     depends_on:
       db:
         condition: service_healthy
@@ -99,7 +98,6 @@ services:
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
-      - CLAW_API_TOKEN=${CLAW_API_TOKEN}
       - SCRAPE_MAX_TOKENS=${SCRAPE_MAX_TOKENS:-80000}
 
       # Container orchestration — host path for Docker volume mounts

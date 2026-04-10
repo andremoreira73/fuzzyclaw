@@ -56,6 +56,22 @@ Per-run shared communication channel. Agents, coordinator, and human exchange me
 
 NL schedule → Gemini Flash LLM call → cron → `django-celery-beat` PeriodicTask. Direct LLM call from Django, not via coordinator. `sync_schedule()` handles idempotency, pause/resume, concurrent run guard. See `core/scheduling.py`.
 
+### Account Pages (implemented)
+
+Login, logout, profile, and password change — styled to match the design system (indigo/purple gradients, rounded cards, Inter font).
+
+**Login** (`registration/login.html`): Standalone page extending `base.html`. Django's built-in `LoginView` serves it.
+
+**Logout** (`core/logout_confirm.html`): Confirmation page that POSTs to Django's `LogoutView`. Required because Django 5 returns 405 on GET `/logout/`. Route: `/sign-out/`.
+
+**Profile** (`core/profile.html`): Edit first name, last name, email. Username is read-only (admin-managed). Links to password change. Uses `ProfileForm` in `core/forms.py`. Route: `/profile/`.
+
+**Password change** (`core/password_change.html`, `core/password_change_done.html`): Custom `PasswordChangeView` subclass pointing to `core/` templates (avoids Django admin template collisions). Routes: `/password-change/`, `/password-change/done/`.
+
+**User menu** (in `base.html` nav): Alpine.js dropdown replacing the old plain username + logout link. Shows Profile and Sign Out options with animated transitions.
+
+**Why custom templates under `core/` instead of `registration/`:** Django admin ships its own `registration/password_change_form.html` and `registration/logged_out.html`. Putting account templates under `core/` with explicit `template_name` in views avoids `INSTALLED_APPS` ordering collisions. The login template stays at `registration/login.html` — overriding admin's login page is the standard Django pattern.
+
 ### Direct Agent Dispatch (planned)
 
 Dashboard area to fire individual agents without coordinator/briefing. Agent picker + task textarea + report display. Same container launch path. Good candidate for personal assistant agent (Documents + Gmail).
@@ -168,10 +184,10 @@ Still to do:
 - ~~Code review fixes~~ — completed (3 rounds, 170 tests passing)
 - ~~Message Board — stabilize~~ — hardened 2026-03-28: simplified tools, middleware, coordinator guard, view gates removed
 - ~~Message Board — fix addressing~~ — done 2026-03-29: multi-mention, no-@ defaults to coordinator
+- ~~Login / logout / profile pages~~ — done 2026-04-10: logout confirmation (fixes Django 5 GET→405), profile editing, password change, Alpine.js user dropdown
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
-- Login / logout page styling
 
 ### Board Addressing Fix (next)
 

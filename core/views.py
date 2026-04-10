@@ -7,12 +7,15 @@ import redis as redis_lib
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.views import PasswordChangeDoneView, PasswordChangeView
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
+from django.urls import reverse_lazy
 from django.utils import timezone as dj_timezone
 from django.views.decorators.http import require_POST
 
+from .forms import ProfileForm
 from .models import AgentImage, AgentRun, Briefing, Run
 from .scheduling import get_schedule_status, sync_schedule
 
@@ -503,3 +506,37 @@ def board_active_runs(request):
         logger.warning("board_active_runs: Redis read failed: %s", e)
 
     return JsonResponse(data, safe=False)
+
+
+# ---------------------------------------------------------------------------
+# Account management
+# ---------------------------------------------------------------------------
+
+class CustomPasswordChangeView(PasswordChangeView):
+    template_name = 'core/password_change.html'
+    success_url = reverse_lazy('core:password_change_done')
+
+
+class CustomPasswordChangeDoneView(PasswordChangeDoneView):
+    template_name = 'core/password_change_done.html'
+
+
+@login_required
+def logout_confirm_view(request):
+    """GET renders sign-out confirmation; form POSTs to Django's built-in LogoutView."""
+    return render(request, 'core/logout_confirm.html')
+
+
+@login_required
+def profile_view(request):
+    """User profile — view and edit name/email, link to password change."""
+    if request.method == 'POST':
+        form = ProfileForm(request.POST, instance=request.user)
+        if form.is_valid():
+            form.save()
+            messages.success(request, 'Your profile has been updated.')
+            return redirect('core:profile')
+    else:
+        form = ProfileForm(instance=request.user)
+
+    return render(request, 'core/profile.html', {'form': form})

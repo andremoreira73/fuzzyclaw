@@ -7,6 +7,12 @@ app_name = 'core'
 urlpatterns = [
     path('', views.dashboard, name='dashboard'),
 
+    # Account management
+    path('profile/', views.profile_view, name='profile'),
+    path('sign-out/', views.logout_confirm_view, name='logout_confirm'),
+    path('password-change/', views.CustomPasswordChangeView.as_view(), name='password_change'),
+    path('password-change/done/', views.CustomPasswordChangeDoneView.as_view(), name='password_change_done'),
+
     # Briefings
     path('briefings/', views.briefing_list, name='briefing_list'),
     path('briefings/new/', views.briefing_create, name='briefing_create'),

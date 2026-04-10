@@ -209,7 +209,7 @@ Complete the task given to you and return a clear, structured report of your fin
                 model=model,
                 tools=agent_tools,
                 system_prompt=system_prompt,
-                backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
+                backend=FilesystemBackend(root_dir="/", virtual_mode=True),
                 skills=['/skills'],
                 middleware=middleware,
             )

@@ -60,12 +60,12 @@ def build_coordinator(briefing, run):
     from agent_tools.message_board import build_message_board_tools
 
     from .agent_tools import (
-        check_reports,
         list_available_agents,
+        make_check_reports,
         make_dispatch_specialist,
         make_manage_schedule,
+        make_read_report,
         make_submit_coordinator_report,
-        read_report,
     )
 
     model = get_model(briefing.coordinator_model)
@@ -106,8 +106,8 @@ def build_coordinator(briefing, run):
     tools = [
         list_available_agents,
         make_dispatch_specialist(run),
-        check_reports,
-        read_report,
+        make_check_reports(run),
+        make_read_report(run),
         make_submit_coordinator_report(run),
         make_manage_schedule(briefing),
     ]

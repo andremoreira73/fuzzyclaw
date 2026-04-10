@@ -1,3 +1,6 @@
+import logging
+
+from celery.result import AsyncResult
 from django.utils import timezone
 from rest_framework import serializers as drf_serializers
 from rest_framework import status, viewsets
@@ -5,6 +8,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .containers import _release_container_slot, cleanup_run
 from .models import AgentRun, Briefing, Run
 from .registry import AgentNotFound, SkillNotFound, get_agent, get_available_agents, get_available_skills, get_skill
 from .serializers import (
@@ -14,6 +18,9 @@ from .serializers import (
     FilesystemSkillSerializer,
     RunSerializer,
 )
+from .tasks import launch_run
+
+logger = logging.getLogger(__name__)
 
 
 class AgentListView(APIView):
@@ -74,15 +81,13 @@ class BriefingViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def launch(self, request, pk=None):
         """Create a new Run for this briefing and dispatch the coordinator."""
-        from .tasks import launch_coordinator
-
         briefing = self.get_object()
         run = Run.objects.create(
             briefing=briefing,
             status='pending',
             triggered_by='manual',
         )
-        launch_coordinator.delay(run.id)
+        launch_run(run)
         serializer = RunSerializer(run, context={'request': request})
         return Response(serializer.data, status=status.HTTP_201_CREATED)
 
@@ -117,18 +122,62 @@ class RunViewSet(viewsets.ReadOnlyModelViewSet):
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, pk=None):
-        """Mark a stuck or unwanted run as failed. Useful for operational
-        cleanup when a run is stranded in ``running`` status."""
+        """Cancel a running or pending run.
+
+        Unlike a simple status flip, this actually tears the run down:
+        revokes the Celery coordinator task, cleans up any running agent
+        containers and releases their concurrency slots, and finalizes
+        any non-terminal ``AgentRun`` rows. ``launch_coordinator`` checks
+        for this terminal state before writing its final result, so a
+        coordinator that finishes after cancellation cannot overwrite
+        the cancelled state.
+        """
         run = self.get_object()
         if run.status in ('completed', 'failed'):
             return Response(
                 {'detail': f"Run is already {run.status}."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
+
+        # 1. Revoke the Celery task so the coordinator stops executing.
+        if run.celery_task_id:
+            try:
+                AsyncResult(run.celery_task_id).revoke(terminate=True)
+            except Exception as e:
+                # Non-fatal: the DB-level check in launch_coordinator is
+                # the authoritative backstop if revoke is unavailable.
+                logger.warning(
+                    "Failed to revoke Celery task %s for run %d: %s",
+                    run.celery_task_id, run.id, e,
+                )
+
+        # 2. Mark the run terminal BEFORE cleanup so a racing coordinator
+        #    sees the cancellation on its next refresh_from_db().
+        now = timezone.now()
         run.status = 'failed'
         run.error_message = 'Cancelled by user.'
-        run.completed_at = timezone.now()
+        run.completed_at = now
         run.save(update_fields=['status', 'error_message', 'completed_at'])
+
+        # 3. Finalize any non-terminal AgentRuns AND release their semaphore
+        #    slots in the same step. cleanup_run below only releases slots
+        #    for rows still in 'running' — once we flip them to 'failed', it
+        #    would leak those slots. Release here, before cleanup_run runs.
+        for ar in run.agent_runs.filter(status__in=('pending', 'running')):
+            ar.status = 'failed'
+            ar.error_message = 'Run cancelled.'
+            ar.completed_at = now
+            ar.save(update_fields=['status', 'error_message', 'completed_at'])
+            _release_container_slot(ar.id)
+
+        # 4. Kill containers, remove comms dirs, clear Redis streams.
+        try:
+            cleanup_run(run.id)
+        except Exception as e:
+            logger.warning(
+                "cleanup_run failed during cancel of run %d: %s", run.id, e,
+            )
+
         serializer = self.get_serializer(run)
         return Response(serializer.data)
 

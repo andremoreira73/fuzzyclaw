@@ -6,7 +6,21 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from .agent_runtime import run_coordinator
+from .containers import cleanup_run
+from .models import Briefing, Run
+
 logger = logging.getLogger(__name__)
+
+
+def launch_run(run):
+    """Dispatch launch_coordinator for an existing Run and persist the Celery
+    task ID on the run so the cancel action can revoke it later.
+    """
+    async_result = launch_coordinator.delay(run.id)
+    run.celery_task_id = str(async_result.id) if async_result.id else ''
+    run.save(update_fields=['celery_task_id'])
+    return run
 
 
 @shared_task(bind=True, max_retries=1)
@@ -16,9 +30,6 @@ def launch_coordinator(self, run_id: int):
     Called from Django views (e.g. "Run Now" button) or from Celery Beat (scheduled runs).
     The coordinator reads the briefing, dispatches specialists, and writes the final report.
     """
-    from .agent_runtime import run_coordinator
-    from .models import Run
-
     try:
         run = Run.objects.select_related('briefing').get(pk=run_id)
     except Run.DoesNotExist:
@@ -39,6 +50,11 @@ def launch_coordinator(self, run_id: int):
         report = run_coordinator(run.briefing, run)
 
         run.refresh_from_db()
+        if run.status == 'failed':
+            # Cancelled mid-flight by the cancel action — don't overwrite
+            # the terminal state with 'completed'.
+            logger.info("Run %d was cancelled mid-flight; not overwriting terminal state", run_id)
+            return
         run.status = 'completed'
         run.completed_at = timezone.now()
         if not run.coordinator_report:
@@ -49,6 +65,11 @@ def launch_coordinator(self, run_id: int):
 
     except Exception as e:
         logger.error("Run %d failed: %s", run_id, e, exc_info=True)
+        run.refresh_from_db()
+        if run.status == 'failed':
+            # Already terminal from the cancel path — keep that message.
+            logger.info("Run %d was already cancelled; preserving cancellation reason", run_id)
+            return
         run.status = 'failed'
         run.error_message = str(e)
         run.completed_at = timezone.now()
@@ -56,7 +77,6 @@ def launch_coordinator(self, run_id: int):
         raise
 
     finally:
-        from .containers import cleanup_run
         try:
             cleanup_run(run_id)
         except Exception as e:
@@ -70,8 +90,6 @@ def launch_briefing_scheduled(briefing_id: int):
     Creates a Run with triggered_by='scheduled' and hands off to launch_coordinator.
     Skips if the briefing is inactive or already has a running run.
     """
-    from .models import Briefing, Run
-
     with transaction.atomic():
         try:
             briefing = Briefing.objects.select_for_update().get(pk=briefing_id, is_active=True)
@@ -90,7 +108,7 @@ def launch_briefing_scheduled(briefing_id: int):
         )
 
     logger.info("Scheduled run #%d created for briefing '%s'", run.id, briefing.title)
-    launch_coordinator.delay(run.id)
+    launch_run(run)
 
 
 @shared_task

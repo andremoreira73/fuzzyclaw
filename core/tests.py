@@ -523,14 +523,60 @@ class APITests(TestCase):
         self.assertEqual(run.user_notes, 'Interesting — revisit next week.')
         self.assertEqual(run.status, 'completed')  # unchanged
 
-    def test_run_cancel_action_marks_stuck_run_failed(self):
-        run = Run.objects.create(briefing=self.briefing, status='running')
+    @patch('core.api_views.cleanup_run')
+    @patch('core.api_views.AsyncResult')
+    def test_run_cancel_action_marks_stuck_run_failed(self, mock_async_result, mock_cleanup):
+        run = Run.objects.create(
+            briefing=self.briefing, status='running', celery_task_id='task-xyz',
+        )
         response = self.client.post(f'/api/runs/{run.pk}/cancel/')
         self.assertEqual(response.status_code, 200)
         run.refresh_from_db()
         self.assertEqual(run.status, 'failed')
         self.assertIn('Cancelled', run.error_message)
         self.assertIsNotNone(run.completed_at)
+        mock_async_result.assert_called_once_with('task-xyz')
+        mock_async_result.return_value.revoke.assert_called_once_with(terminate=True)
+        mock_cleanup.assert_called_once_with(run.id)
+
+    @patch('core.api_views._release_container_slot')
+    @patch('core.api_views.cleanup_run')
+    @patch('core.api_views.AsyncResult')
+    def test_run_cancel_finalizes_running_agent_runs(
+        self, mock_async_result, mock_cleanup, mock_release,
+    ):
+        run = Run.objects.create(briefing=self.briefing, status='running')
+        ar_running = AgentRun.objects.create(
+            run=run, agent_name='r-agent', status='running',
+        )
+        ar_pending = AgentRun.objects.create(
+            run=run, agent_name='p-agent', status='pending',
+        )
+        ar_already_done = AgentRun.objects.create(
+            run=run, agent_name='done-agent', status='completed',
+            report='Already done.',
+        )
+
+        response = self.client.post(f'/api/runs/{run.pk}/cancel/')
+        self.assertEqual(response.status_code, 200)
+
+        ar_running.refresh_from_db()
+        ar_pending.refresh_from_db()
+        ar_already_done.refresh_from_db()
+
+        self.assertEqual(ar_running.status, 'failed')
+        self.assertIn('cancelled', ar_running.error_message.lower())
+        self.assertEqual(ar_pending.status, 'failed')
+        self.assertEqual(ar_already_done.status, 'completed')  # untouched
+        self.assertEqual(ar_already_done.report, 'Already done.')
+
+        # Slots MUST be released as part of the finalization loop. cleanup_run
+        # only releases slots for rows still in 'running' — since cancel flips
+        # them to 'failed', we'd leak semaphore slots if we relied on cleanup_run.
+        released_ids = {call.args[0] for call in mock_release.call_args_list}
+        self.assertIn(ar_running.id, released_ids)
+        self.assertIn(ar_pending.id, released_ids)
+        self.assertNotIn(ar_already_done.id, released_ids)
 
     def test_run_cancel_rejects_terminal_run(self):
         run = Run.objects.create(briefing=self.briefing, status='completed')
@@ -1613,12 +1659,15 @@ class CheckReportsToolTests(TestCase):
     """Tests for the check_reports coordinator tool."""
 
     def setUp(self):
+        from .agent_tools import make_check_reports
+
         self.user = User.objects.create_user(username='checkuser', password='testpass123')
         self.briefing = Briefing.objects.create(
             owner=self.user, title='Check Test', content='test',
         )
         self.run = Run.objects.create(briefing=self.briefing, status='running')
         self.comms_base = settings.BASE_DIR / 'comms'
+        self.check_reports = make_check_reports(self.run)
 
     def tearDown(self):
         import shutil
@@ -1629,7 +1678,6 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_completed(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None  # No Redis
 
@@ -1642,7 +1690,7 @@ class CheckReportsToolTests(TestCase):
         comms_dir.mkdir(parents=True, exist_ok=True)
         (comms_dir / 'report.json').write_text(json.dumps({'status': 'completed'}))
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertIn('progress', data)
@@ -1654,7 +1702,6 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_failed(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
 
@@ -1662,12 +1709,11 @@ class CheckReportsToolTests(TestCase):
             run=self.run, agent_name='test-agent', status='running',
         )
 
-        # Write error file
         comms_dir = self.comms_base / str(agent_run.id)
         comms_dir.mkdir(parents=True, exist_ok=True)
         (comms_dir / 'error.json').write_text(json.dumps({'status': 'failed'}))
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertEqual(data['agents'][0]['status'], 'failed')
@@ -1676,7 +1722,6 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_still_running(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'running'
@@ -1684,9 +1729,8 @@ class CheckReportsToolTests(TestCase):
         AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='running',
         )
-        # No comms files written
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertEqual(data['agents'][0]['status'], 'running')
@@ -1695,7 +1739,6 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_crashed(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'exited'
@@ -1703,14 +1746,12 @@ class CheckReportsToolTests(TestCase):
         agent_run = AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='running',
         )
-        # No comms files — container exited without writing report
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertEqual(data['agents'][0]['status'], 'crashed')
 
-        # Verify AgentRun was finalized in DB
         agent_run.refresh_from_db()
         self.assertEqual(agent_run.status, 'failed')
         self.assertIn('without writing a report', agent_run.error_message)
@@ -1719,7 +1760,6 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_timed_out(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'running'
@@ -1730,7 +1770,7 @@ class CheckReportsToolTests(TestCase):
         )
 
         with self.settings(FUZZYCLAW_AGENT_TIMEOUT=600):
-            result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+            result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertEqual(data['agents'][0]['status'], 'timed_out')
@@ -1745,23 +1785,20 @@ class CheckReportsToolTests(TestCase):
     def test_check_reports_hitl_agent_gets_longer_timeout(self, mock_status, mock_redis, mock_get_agent):
         """Agents with message_board tool use HITL timeout, not agent timeout."""
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'running'
         mock_get_agent.return_value = {'name': 'test-agent', 'tools': ['message_board']}
 
-        # Agent has been running 700s — beyond agent timeout (600) but within HITL (1800)
         AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='running',
             started_at=timezone.now() - timezone.timedelta(seconds=700),
         )
 
         with self.settings(FUZZYCLAW_AGENT_TIMEOUT=600, FUZZYCLAW_HITL_TIMEOUT=1800):
-            result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+            result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
-        # Should still be running — HITL timeout gives it 1800s
         self.assertEqual(data['agents'][0]['status'], 'running')
 
     @patch('core.agent_tools.get_agent')
@@ -1770,7 +1807,6 @@ class CheckReportsToolTests(TestCase):
     def test_check_reports_non_hitl_agent_times_out_normally(self, mock_status, mock_redis, mock_get_agent):
         """Agents without message_board use the standard agent timeout."""
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'running'
@@ -1782,44 +1818,37 @@ class CheckReportsToolTests(TestCase):
         )
 
         with self.settings(FUZZYCLAW_AGENT_TIMEOUT=600, FUZZYCLAW_HITL_TIMEOUT=1800):
-            result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+            result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
-        # Should be timed out — 700s > 600s agent timeout
         self.assertEqual(data['agents'][0]['status'], 'timed_out')
 
     @patch('core.containers._get_redis_client')
     @patch('core.containers.get_container_status')
     def test_check_reports_excludes_already_finalized(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
 
-        # Already-read agent (status='completed') should NOT appear
         AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='completed',
             report='Done.',
         )
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
-        # No agents in the list — the completed one is excluded
         self.assertEqual(data['agents'], [])
-        # But progress shows it
         self.assertIn('1/1', data['progress'])
 
     @patch('core.containers._get_redis_client')
     @patch('core.containers.get_container_status')
     def test_check_reports_mixed_only_shows_running(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
         mock_status.return_value = 'running'
 
-        # One completed (already read), one still running
         AgentRun.objects.create(
             run=self.run, agent_name='agent-a', status='completed',
         )
@@ -1827,26 +1856,22 @@ class CheckReportsToolTests(TestCase):
             run=self.run, agent_name='agent-b', status='running',
         )
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
-        # Only agent-b (running) should appear
         self.assertEqual(len(data['agents']), 1)
         self.assertEqual(data['agents'][0]['agent_name'], 'agent-b')
         self.assertEqual(data['agents'][0]['status'], 'running')
-        # Progress shows 1/2 done
         self.assertIn('1/2', data['progress'])
 
     @patch('core.containers._get_redis_client')
     @patch('core.containers.get_container_status')
     def test_check_reports_caps_wait_seconds(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
 
-        # Even with wait_seconds=999, should not hang
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 999})
+        result = self.check_reports.invoke({'wait_seconds': 999})
         data = json.loads(result)
         self.assertEqual(data['agents'], [])
         self.assertIn('0/0', data['progress'])
@@ -1855,39 +1880,54 @@ class CheckReportsToolTests(TestCase):
     @patch('core.containers.get_container_status')
     def test_check_reports_excludes_dispatch_failures(self, mock_status, mock_redis):
         import json
-        from .agent_tools import check_reports
 
         mock_redis.return_value = None
 
-        # Dispatch failure (pending status) — should NOT appear
         AgentRun.objects.create(
             run=self.run, agent_name='failed-dispatch', status='pending',
         )
-        # Running agent — should appear
         AgentRun.objects.create(
             run=self.run, agent_name='running-agent', status='running',
         )
         mock_status.return_value = 'running'
 
-        result = check_reports.invoke({'run_id': self.run.id, 'wait_seconds': 1})
+        result = self.check_reports.invoke({'wait_seconds': 1})
         data = json.loads(result)
 
         self.assertEqual(len(data['agents']), 1)
         self.assertEqual(data['agents'][0]['agent_name'], 'running-agent')
-        # Progress excludes pending: 0/1 done (only running-agent counts)
         self.assertIn('0/1', data['progress'])
+
+    def test_check_reports_cannot_inspect_other_runs(self):
+        """Closure-bound: the tool only sees its own run's agents."""
+        import json
+
+        other_briefing = Briefing.objects.create(
+            owner=self.user, title='Other', content='x',
+        )
+        other_run = Run.objects.create(briefing=other_briefing, status='running')
+        AgentRun.objects.create(
+            run=other_run, agent_name='other-agent', status='running',
+        )
+
+        result = self.check_reports.invoke({'wait_seconds': 1})
+        data = json.loads(result)
+        self.assertEqual(data['agents'], [])
 
 
 class ReadReportToolTests(TestCase):
     """Tests for the read_report coordinator tool."""
 
     def setUp(self):
+        from .agent_tools import make_read_report
+
         self.user = User.objects.create_user(username='readuser', password='testpass123')
         self.briefing = Briefing.objects.create(
             owner=self.user, title='Read Test', content='test',
         )
         self.run = Run.objects.create(briefing=self.briefing, status='running')
         self.comms_base = settings.BASE_DIR / 'comms'
+        self.read_report = make_read_report(self.run)
 
     def tearDown(self):
         import shutil
@@ -1895,37 +1935,32 @@ class ReadReportToolTests(TestCase):
             shutil.rmtree(self.comms_base, ignore_errors=True)
 
     def test_read_report_not_found(self):
-        from .agent_tools import read_report
-        result = read_report.invoke({'agent_run_id': 99999})
+        result = self.read_report.invoke({'agent_run_id': 99999})
         self.assertIn('not found', result)
 
     def test_read_report_already_completed(self):
-        from .agent_tools import read_report
         agent_run = AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='completed',
             report='Already stored report.',
         )
-        result = read_report.invoke({'agent_run_id': agent_run.id})
+        result = self.read_report.invoke({'agent_run_id': agent_run.id})
         self.assertEqual(result, 'Already stored report.')
 
     def test_read_report_already_failed(self):
-        from .agent_tools import read_report
         agent_run = AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='failed',
             error_message='Already stored error.',
         )
-        result = read_report.invoke({'agent_run_id': agent_run.id})
+        result = self.read_report.invoke({'agent_run_id': agent_run.id})
         self.assertIn('Already stored error', result)
 
     def test_read_report_from_filesystem(self):
         import json
-        from .agent_tools import read_report
 
         agent_run = AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='running',
         )
 
-        # Write report file
         comms_dir = self.comms_base / str(agent_run.id)
         comms_dir.mkdir(parents=True, exist_ok=True)
         (comms_dir / 'report.json').write_text(json.dumps({
@@ -1934,10 +1969,9 @@ class ReadReportToolTests(TestCase):
             'report': 'Filesystem report content.',
         }))
 
-        result = read_report.invoke({'agent_run_id': agent_run.id})
+        result = self.read_report.invoke({'agent_run_id': agent_run.id})
         self.assertEqual(result, 'Filesystem report content.')
 
-        # Verify DB was updated
         agent_run.refresh_from_db()
         self.assertEqual(agent_run.status, 'completed')
         self.assertEqual(agent_run.report, 'Filesystem report content.')
@@ -1945,7 +1979,6 @@ class ReadReportToolTests(TestCase):
 
     def test_read_report_error_from_filesystem(self):
         import json
-        from .agent_tools import read_report
 
         agent_run = AgentRun.objects.create(
             run=self.run, agent_name='test-agent', status='running',
@@ -1958,12 +1991,27 @@ class ReadReportToolTests(TestCase):
             'error': 'Agent timeout.',
         }))
 
-        result = read_report.invoke({'agent_run_id': agent_run.id})
+        result = self.read_report.invoke({'agent_run_id': agent_run.id})
         self.assertIn('failed', result)
         self.assertIn('Agent timeout', result)
 
         agent_run.refresh_from_db()
         self.assertEqual(agent_run.status, 'failed')
+
+    def test_read_report_rejects_agent_run_from_other_run(self):
+        """Closure-bound: a coordinator cannot read reports from other runs,
+        even with a valid (but foreign) agent_run_id."""
+        other_briefing = Briefing.objects.create(
+            owner=self.user, title='Other', content='x',
+        )
+        other_run = Run.objects.create(briefing=other_briefing, status='running')
+        foreign_ar = AgentRun.objects.create(
+            run=other_run, agent_name='other-agent', status='completed',
+            report='Should not be readable.',
+        )
+
+        result = self.read_report.invoke({'agent_run_id': foreign_ar.id})
+        self.assertIn('not found in the current run', result)
 
 
 def docker_image_not_found():
@@ -2150,6 +2198,101 @@ class SchedulingTests(TestCase):
         self.briefing.delete()
 
         self.assertFalse(PeriodicTask.objects.filter(name=f'briefing-{briefing_id}').exists())
+
+
+class LaunchRunHelperTests(TestCase):
+    """Tests for the launch_run helper that captures Celery task IDs."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='launchuser', password='testpass123')
+        self.briefing = Briefing.objects.create(
+            owner=self.user, title='Launch Test', content='test',
+        )
+
+    @patch('core.tasks.launch_coordinator.delay')
+    def test_launch_run_stores_task_id(self, mock_delay):
+        from core.tasks import launch_run
+
+        mock_async = MagicMock()
+        mock_async.id = 'task-abc-123'
+        mock_delay.return_value = mock_async
+
+        run = Run.objects.create(briefing=self.briefing, status='pending')
+        launch_run(run)
+
+        run.refresh_from_db()
+        self.assertEqual(run.celery_task_id, 'task-abc-123')
+        mock_delay.assert_called_once_with(run.id)
+
+
+class LaunchCoordinatorCancellationTests(TestCase):
+    """Tests that launch_coordinator respects a mid-flight cancellation."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='canceluser', password='testpass123')
+        self.briefing = Briefing.objects.create(
+            owner=self.user, title='Cancel Test', content='test',
+        )
+
+    @patch('core.containers.cleanup_run')
+    @patch('core.tasks.run_coordinator')
+    def test_coordinator_success_does_not_overwrite_cancelled_run(
+        self, mock_run_coordinator, mock_cleanup,
+    ):
+        """If the run is cancelled mid-flight, a successful coordinator return
+        must not flip status back to 'completed'."""
+        from core.tasks import launch_coordinator
+
+        run = Run.objects.create(
+            briefing=self.briefing, status='pending', triggered_by='manual',
+        )
+
+        def cancel_mid_flight(*args, **kwargs):
+            Run.objects.filter(pk=run.id).update(
+                status='failed',
+                error_message='Cancelled by user.',
+                completed_at=timezone.now(),
+            )
+            return 'coordinator finished successfully'
+
+        mock_run_coordinator.side_effect = cancel_mid_flight
+
+        launch_coordinator(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'failed')
+        self.assertEqual(run.error_message, 'Cancelled by user.')
+
+    @patch('core.containers.cleanup_run')
+    @patch('core.tasks.run_coordinator')
+    def test_coordinator_exception_does_not_overwrite_cancellation_reason(
+        self, mock_run_coordinator, mock_cleanup,
+    ):
+        """If the run was already cancelled, a coordinator exception must not
+        overwrite the cancellation error_message with the crash message."""
+        from core.tasks import launch_coordinator
+
+        run = Run.objects.create(
+            briefing=self.briefing, status='pending', triggered_by='manual',
+        )
+
+        def cancel_then_crash(*args, **kwargs):
+            Run.objects.filter(pk=run.id).update(
+                status='failed',
+                error_message='Cancelled by user.',
+                completed_at=timezone.now(),
+            )
+            raise RuntimeError('coordinator crashed after cancellation')
+
+        mock_run_coordinator.side_effect = cancel_then_crash
+
+        # Should not raise — the task swallows the exception when the run
+        # is already in a terminal state due to cancellation.
+        launch_coordinator(run.id)
+
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'failed')
+        self.assertEqual(run.error_message, 'Cancelled by user.')
 
 
 class BoardViewTests(TestCase):

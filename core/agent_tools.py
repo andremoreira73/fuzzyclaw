@@ -157,122 +157,130 @@ def make_dispatch_specialist(run):
     return dispatch_specialist
 
 
-@tool
-def check_reports(run_id: int, wait_seconds: int = 30) -> str:
-    """Check which specialists still need attention for a run. Blocks up to
-    wait_seconds (max 120) for new completions via Redis Streams, then
-    returns only agents that haven't been read yet (status='running' in DB).
+def make_check_reports(run):
+    """Build a check_reports tool bound to the active run.
 
-    Already-read reports and dispatch failures are excluded to keep payloads small.
-    Includes a progress summary line.
-
-    Returns JSON: {progress: "14/26 done", agents: [{agent_run_id, agent_name, status}, ...]}
-
-    Args:
-        run_id: The Run ID to check.
-        wait_seconds: How long to block waiting for new completions (default 30, max 120).
+    The tool cannot inspect any other run — the run_id comes from the
+    closure, not the model's arguments.
     """
-    import core.containers as _containers_mod
-    from django.conf import settings as django_settings
-    from django.utils import timezone as tz
+    run_id = run.id
 
-    from .containers import _get_redis_client, get_container_status
-    from .models import AgentRun
+    @tool
+    def check_reports(wait_seconds: int = 30) -> str:
+        """Check which specialists still need attention for the current run.
+        Blocks up to wait_seconds (max 120) for new completions via Redis Streams,
+        then returns only agents that haven't been read yet (status='running' in DB).
 
-    wait_seconds = max(1, min(wait_seconds, 120))
-    agent_timeout = getattr(django_settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)
-    hitl_timeout = getattr(django_settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)
+        Already-read reports and dispatch failures are excluded to keep payloads small.
+        Includes a progress summary line.
 
-    # Try Redis Streams first for instant notification
-    r = _get_redis_client()
-    stream_key = f"fuzzyclaw:run:{run_id}:done"
+        Returns JSON: {progress: "14/26 done", agents: [{agent_run_id, agent_name, status}, ...]}
 
-    if r:
-        try:
-            # Block-wait for completion signals, accumulating all that arrive
-            # before the deadline. '$' = only new entries (not replaying old ones).
-            deadline = time.time() + wait_seconds
-            last_id = '$'
-            running_count = AgentRun.objects.filter(run_id=run_id, status='running').count()
-            signals_received = 0
-            while time.time() < deadline and signals_received < running_count:
-                remaining_ms = max(100, int((deadline - time.time()) * 1000))
-                streams = r.xread(
-                    {stream_key: last_id},
-                    block=remaining_ms,
-                    count=100,
-                )
-                if streams:
-                    entries = streams[0][1]
-                    signals_received += len(entries)
-                    last_id = entries[-1][0]  # track last seen ID
-        except Exception as e:
-            logger.warning("Redis XREAD failed (falling back to filesystem): %s", e)
+        Args:
+            wait_seconds: How long to block waiting for new completions (default 30, max 120).
+        """
+        from django.conf import settings as django_settings
+        from django.utils import timezone as tz
 
-    # Progress summary — total excludes dispatch failures (deleted or pending)
-    total = AgentRun.objects.filter(run_id=run_id, status__in=['running', 'completed', 'failed']).count()
-    done = AgentRun.objects.filter(run_id=run_id, status__in=['completed', 'failed']).count()
+        from .containers import _get_redis_client, get_container_status
+        from .models import AgentRun
 
-    # Only query agents still needing attention (DB status='running')
-    # Already-read reports (completed/failed) and dispatch failures (pending/deleted)
-    # are excluded — the coordinator already has that data.
-    agent_runs = AgentRun.objects.filter(run_id=run_id, status='running').order_by('id')
-    comms_base = django_settings.BASE_DIR / 'comms'
-    now = tz.now()
+        nonlocal_wait = max(1, min(wait_seconds, 120))
+        agent_timeout = getattr(django_settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)
+        hitl_timeout = getattr(django_settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)
 
-    statuses = []
-    for ar in agent_runs:
-        # Check if report file exists (filesystem polling)
-        comms_dir = comms_base / str(ar.id)
-        report_path = comms_dir / 'report.json'
-        error_path = comms_dir / 'error.json'
+        # Try Redis Streams first for instant notification
+        r = _get_redis_client()
+        stream_key = f"fuzzyclaw:run:{run_id}:done"
 
-        if report_path.is_file():
-            statuses.append({
-                'agent_run_id': ar.id,
-                'agent_name': ar.agent_name,
-                'status': 'completed',
-            })
-        elif error_path.is_file():
-            statuses.append({
-                'agent_run_id': ar.id,
-                'agent_name': ar.agent_name,
-                'status': 'failed',
-            })
-        else:
-            # No report yet — check if container is still alive
-            container_status = get_container_status(ar.id, ar.agent_name)
+        if r:
+            try:
+                # Block-wait for completion signals, accumulating all that arrive
+                # before the deadline. '$' = only new entries (not replaying old ones).
+                deadline = time.time() + nonlocal_wait
+                last_id = '$'
+                running_count = AgentRun.objects.filter(run_id=run_id, status='running').count()
+                signals_received = 0
+                while time.time() < deadline and signals_received < running_count:
+                    remaining_ms = max(100, int((deadline - time.time()) * 1000))
+                    streams = r.xread(
+                        {stream_key: last_id},
+                        block=remaining_ms,
+                        count=100,
+                    )
+                    if streams:
+                        entries = streams[0][1]
+                        signals_received += len(entries)
+                        last_id = entries[-1][0]  # track last seen ID
+            except Exception as e:
+                logger.warning("Redis XREAD failed (falling back to filesystem): %s", e)
 
-            if container_status == 'exited' or container_status == 'removed':
-                # Container gone without writing a report — crashed
-                _finalize_agent_run(ar, 'failed', f'Container {container_status} without writing a report.', now)
+        # Progress summary — total excludes dispatch failures (deleted or pending)
+        total = AgentRun.objects.filter(run_id=run_id, status__in=['running', 'completed', 'failed']).count()
+        done = AgentRun.objects.filter(run_id=run_id, status__in=['completed', 'failed']).count()
+
+        # Only query agents still needing attention (DB status='running')
+        # Already-read reports (completed/failed) and dispatch failures (pending/deleted)
+        # are excluded — the coordinator already has that data.
+        agent_runs = AgentRun.objects.filter(run_id=run_id, status='running').order_by('id')
+        comms_base = django_settings.BASE_DIR / 'comms'
+        now = tz.now()
+
+        statuses = []
+        for ar in agent_runs:
+            # Check if report file exists (filesystem polling)
+            comms_dir = comms_base / str(ar.id)
+            report_path = comms_dir / 'report.json'
+            error_path = comms_dir / 'error.json'
+
+            if report_path.is_file():
                 statuses.append({
                     'agent_run_id': ar.id,
                     'agent_name': ar.agent_name,
-                    'status': 'crashed',
+                    'status': 'completed',
                 })
-            elif ar.started_at and (now - ar.started_at).total_seconds() > _effective_timeout(ar, agent_timeout, hitl_timeout):
-                # Timed out — kill the container and finalize
-                effective = _effective_timeout(ar, agent_timeout, hitl_timeout)
-                _kill_timed_out_container(ar)
-                _finalize_agent_run(ar, 'failed', f'Agent timed out after {effective}s.', now)
+            elif error_path.is_file():
                 statuses.append({
                     'agent_run_id': ar.id,
                     'agent_name': ar.agent_name,
-                    'status': 'timed_out',
+                    'status': 'failed',
                 })
             else:
-                statuses.append({
-                    'agent_run_id': ar.id,
-                    'agent_name': ar.agent_name,
-                    'status': 'running',
-                })
+                # No report yet — check if container is still alive
+                container_status = get_container_status(ar.id, ar.agent_name)
 
-    result = {
-        'progress': f'{done}/{total} agents done',
-        'agents': statuses,
-    }
-    return json.dumps(result, indent=2)
+                if container_status == 'exited' or container_status == 'removed':
+                    # Container gone without writing a report — crashed
+                    _finalize_agent_run(ar, 'failed', f'Container {container_status} without writing a report.', now)
+                    statuses.append({
+                        'agent_run_id': ar.id,
+                        'agent_name': ar.agent_name,
+                        'status': 'crashed',
+                    })
+                elif ar.started_at and (now - ar.started_at).total_seconds() > _effective_timeout(ar, agent_timeout, hitl_timeout):
+                    # Timed out — kill the container and finalize
+                    effective = _effective_timeout(ar, agent_timeout, hitl_timeout)
+                    _kill_timed_out_container(ar)
+                    _finalize_agent_run(ar, 'failed', f'Agent timed out after {effective}s.', now)
+                    statuses.append({
+                        'agent_run_id': ar.id,
+                        'agent_name': ar.agent_name,
+                        'status': 'timed_out',
+                    })
+                else:
+                    statuses.append({
+                        'agent_run_id': ar.id,
+                        'agent_name': ar.agent_name,
+                        'status': 'running',
+                    })
+
+        result = {
+            'progress': f'{done}/{total} agents done',
+            'agents': statuses,
+        }
+        return json.dumps(result, indent=2)
+
+    return check_reports
 
 
 def _effective_timeout(agent_run, agent_timeout: int, hitl_timeout: int) -> int:
@@ -320,58 +328,67 @@ def _kill_timed_out_container(agent_run):
         logger.warning("Failed to kill container for agent_run %d: %s", agent_run.id, e)
 
 
-@tool
-def read_report(agent_run_id: int) -> str:
-    """Read a single specialist's report and finalize its AgentRun record.
-    Call this after check_reports shows the agent has completed or failed.
+def make_read_report(run):
+    """Build a read_report tool bound to the active run.
 
-    Args:
-        agent_run_id: The AgentRun ID to read the report for.
+    The tool can only read reports for agent runs that belong to the bound
+    run. A coordinator can't finalize or peek at unrelated work by passing
+    a stale or hallucinated agent_run_id.
     """
-    from django.utils import timezone
+    run_id = run.id
 
-    from .containers import read_agent_report
-    from .models import AgentRun
+    @tool
+    def read_report(agent_run_id: int) -> str:
+        """Read a single specialist's report and finalize its AgentRun record.
+        Call this after check_reports shows the agent has completed or failed.
 
-    try:
-        agent_run = AgentRun.objects.get(pk=agent_run_id)
-    except AgentRun.DoesNotExist:
-        return f"Error: AgentRun {agent_run_id} not found."
+        Args:
+            agent_run_id: The AgentRun ID to read the report for. Must belong
+                to the current run.
+        """
+        from .containers import _release_container_slot, read_agent_report
+        from .models import AgentRun
 
-    # If already finalized, return the stored report
-    if agent_run.status == 'completed' and agent_run.report:
-        return agent_run.report
-    if agent_run.status == 'failed' and agent_run.error_message:
-        return f"Specialist '{agent_run.agent_name}' failed: {agent_run.error_message}"
+        try:
+            agent_run = AgentRun.objects.get(pk=agent_run_id, run_id=run_id)
+        except AgentRun.DoesNotExist:
+            return f"Error: AgentRun {agent_run_id} not found in the current run."
 
-    # Read from filesystem
-    report_data, exit_code = read_agent_report(agent_run_id)
+        # If already finalized, return the stored report
+        if agent_run.status == 'completed' and agent_run.report:
+            return agent_run.report
+        if agent_run.status == 'failed' and agent_run.error_message:
+            return f"Specialist '{agent_run.agent_name}' failed: {agent_run.error_message}"
 
-    # Release container slot — this agent is done regardless of outcome
-    from .containers import _release_container_slot
-    _release_container_slot(agent_run_id)
+        # Read from filesystem
+        report_data, exit_code = read_agent_report(agent_run_id)
 
-    if exit_code == 0:
-        report_text = report_data.get('report', '')
-        agent_run.status = 'completed'
-        agent_run.report = report_text
-        agent_run.raw_data = report_data
-        agent_run.completed_at = timezone.now()
-        agent_run.save(update_fields=['status', 'report', 'raw_data', 'completed_at'])
-        logger.info("Read report for agent_run %d (%s): completed", agent_run_id, agent_run.agent_name)
-        return report_text
-    else:
-        error_msg = report_data.get('error', f'Agent exited with code {exit_code}')
-        agent_run.status = 'failed'
-        agent_run.error_message = error_msg
-        agent_run.raw_data = report_data
-        agent_run.completed_at = timezone.now()
-        agent_run.save(update_fields=['status', 'error_message', 'raw_data', 'completed_at'])
-        logger.error(
-            "Read report for agent_run %d (%s): failed — %s",
-            agent_run_id, agent_run.agent_name, error_msg,
-        )
-        return f"Specialist '{agent_run.agent_name}' failed: {error_msg}"
+        # Release container slot — this agent is done regardless of outcome
+        _release_container_slot(agent_run_id)
+
+        if exit_code == 0:
+            report_text = report_data.get('report', '')
+            agent_run.status = 'completed'
+            agent_run.report = report_text
+            agent_run.raw_data = report_data
+            agent_run.completed_at = timezone.now()
+            agent_run.save(update_fields=['status', 'report', 'raw_data', 'completed_at'])
+            logger.info("Read report for agent_run %d (%s): completed", agent_run_id, agent_run.agent_name)
+            return report_text
+        else:
+            error_msg = report_data.get('error', f'Agent exited with code {exit_code}')
+            agent_run.status = 'failed'
+            agent_run.error_message = error_msg
+            agent_run.raw_data = report_data
+            agent_run.completed_at = timezone.now()
+            agent_run.save(update_fields=['status', 'error_message', 'raw_data', 'completed_at'])
+            logger.error(
+                "Read report for agent_run %d (%s): failed — %s",
+                agent_run_id, agent_run.agent_name, error_msg,
+            )
+            return f"Specialist '{agent_run.agent_name}' failed: {error_msg}"
+
+    return read_report
 
 
 def make_submit_coordinator_report(run):

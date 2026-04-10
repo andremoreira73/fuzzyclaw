@@ -206,9 +206,18 @@ Complete the task given to you and return a clear, structured report of your fin
             middleware = []
 
             if store is not None:
-                memory_tools = build_memory_tools(store, agent_def['name'])
-                agent_tools.extend(memory_tools)
-                logger.info("Memory tools enabled: remember, recall, recall_all")
+                owner_id = os.environ.get('OWNER_ID', '')
+                if not owner_id:
+                    logger.warning(
+                        "OWNER_ID env var missing — memory tools disabled to prevent cross-user leakage"
+                    )
+                else:
+                    memory_tools = build_memory_tools(store, agent_def['name'], owner_id)
+                    agent_tools.extend(memory_tools)
+                    logger.info(
+                        "Memory tools enabled: remember, recall, recall_all (namespace: owner=%s, agent=%s)",
+                        owner_id, agent_def['name'],
+                    )
 
             if board:
                 agent_tools.extend(board.tools)

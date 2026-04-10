@@ -489,14 +489,63 @@ class APITests(TestCase):
         briefing = Briefing.objects.get(title='New Briefing')
         self.assertEqual(briefing.owner, self.user)
 
-    def test_create_run(self):
+    def test_runs_api_is_read_only(self):
+        """POST /api/runs/ is not allowed — runs are launched via the
+        briefing launch action, not direct creation."""
         response = self.client.post('/api/runs/', {
             'briefing': self.briefing.pk,
             'status': 'pending',
             'triggered_by': 'manual',
         })
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(Run.objects.count(), 0)
+
+    def test_run_patch_cannot_mutate_execution_fields(self):
+        """PATCH /api/runs/{id}/ is not allowed — the run log is immutable
+        from the API surface."""
+        run = Run.objects.create(briefing=self.briefing, status='running')
+        response = self.client.patch(f'/api/runs/{run.pk}/', {
+            'status': 'completed',
+            'coordinator_report': 'fake',
+        }, format='json')
+        self.assertEqual(response.status_code, 405)
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'running')
+        self.assertEqual(run.coordinator_report, '')
+
+    def test_run_notes_action_updates_user_notes(self):
+        run = Run.objects.create(briefing=self.briefing, status='completed')
+        response = self.client.patch(f'/api/runs/{run.pk}/notes/', {
+            'user_notes': 'Interesting — revisit next week.',
+        }, format='json')
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.user_notes, 'Interesting — revisit next week.')
+        self.assertEqual(run.status, 'completed')  # unchanged
+
+    def test_run_cancel_action_marks_stuck_run_failed(self):
+        run = Run.objects.create(briefing=self.briefing, status='running')
+        response = self.client.post(f'/api/runs/{run.pk}/cancel/')
+        self.assertEqual(response.status_code, 200)
+        run.refresh_from_db()
+        self.assertEqual(run.status, 'failed')
+        self.assertIn('Cancelled', run.error_message)
+        self.assertIsNotNone(run.completed_at)
+
+    def test_run_cancel_rejects_terminal_run(self):
+        run = Run.objects.create(briefing=self.briefing, status='completed')
+        response = self.client.post(f'/api/runs/{run.pk}/cancel/')
+        self.assertEqual(response.status_code, 400)
+
+    @patch('core.tasks.launch_coordinator.delay')
+    def test_briefing_launch_creates_run_and_dispatches(self, mock_delay):
+        response = self.client.post(f'/api/briefings/{self.briefing.pk}/launch/')
         self.assertEqual(response.status_code, 201)
-        self.assertEqual(Run.objects.count(), 1)
+        self.assertEqual(Run.objects.filter(briefing=self.briefing).count(), 1)
+        run = Run.objects.get(briefing=self.briefing)
+        self.assertEqual(run.status, 'pending')
+        self.assertEqual(run.triggered_by, 'manual')
+        mock_delay.assert_called_once_with(run.id)
 
     def test_pending_runs_action(self):
         Run.objects.create(briefing=self.briefing, status='pending')
@@ -505,29 +554,42 @@ class APITests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
 
-    def test_create_agent_run(self):
+    def test_agent_runs_api_is_read_only(self):
+        """POST /api/agent-runs/ is not allowed — agent runs are created
+        by the coordinator via the ORM."""
         run = Run.objects.create(briefing=self.briefing, status='running')
         response = self.client.post('/api/agent-runs/', {
             'run': run.pk,
             'agent_name': 'test-agent',
             'status': 'pending',
         })
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(AgentRun.objects.count(), 1)
-        self.assertEqual(AgentRun.objects.first().agent_name, 'test-agent')
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(AgentRun.objects.count(), 0)
 
-    def test_update_agent_run_report(self):
+    def test_agent_run_patch_cannot_mutate_execution_fields(self):
+        """PATCH /api/agent-runs/{id}/ is not allowed — reports, status,
+        and raw_data are execution-managed."""
         run = Run.objects.create(briefing=self.briefing, status='running')
         agent_run = AgentRun.objects.create(run=run, agent_name='test-agent', status='running')
         response = self.client.patch(f'/api/agent-runs/{agent_run.pk}/', {
             'status': 'completed',
-            'report': 'Found 3 results.',
+            'report': 'Fake report.',
             'raw_data': {'items': [1, 2, 3]},
+        }, format='json')
+        self.assertEqual(response.status_code, 405)
+        agent_run.refresh_from_db()
+        self.assertEqual(agent_run.status, 'running')
+        self.assertEqual(agent_run.report, '')
+
+    def test_agent_run_notes_action_updates_user_notes(self):
+        run = Run.objects.create(briefing=self.briefing, status='running')
+        agent_run = AgentRun.objects.create(run=run, agent_name='test-agent', status='completed')
+        response = self.client.patch(f'/api/agent-runs/{agent_run.pk}/notes/', {
+            'user_notes': 'Missed the key source.',
         }, format='json')
         self.assertEqual(response.status_code, 200)
         agent_run.refresh_from_db()
-        self.assertEqual(agent_run.status, 'completed')
-        self.assertEqual(agent_run.report, 'Found 3 results.')
+        self.assertEqual(agent_run.user_notes, 'Missed the key source.')
 
     def test_run_includes_agent_runs(self):
         run = Run.objects.create(briefing=self.briefing, status='running')
@@ -746,11 +808,11 @@ class StartAgentContainerTests(TestCase):
         from .registry import clear_cache
         clear_cache()
 
-        # Reset container counter
-        import core.containers as containers_mod
-        with containers_mod._container_lock:
-            self._orig_count = containers_mod._container_count
-            containers_mod._container_count = 0
+        # Stub the Redis-backed concurrency gate so tests don't need real Redis
+        self._acquire_patcher = patch('core.containers._acquire_container_slot')
+        self._release_patcher = patch('core.containers._release_container_slot')
+        self.mock_acquire = self._acquire_patcher.start()
+        self.mock_release = self._release_patcher.start()
 
     def tearDown(self):
         settings.FUZZYCLAW_AGENTS_DIR = self._orig_agents_dir
@@ -759,10 +821,8 @@ class StartAgentContainerTests(TestCase):
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-        # Restore container counter
-        import core.containers as containers_mod
-        with containers_mod._container_lock:
-            containers_mod._container_count = self._orig_count
+        self._acquire_patcher.stop()
+        self._release_patcher.stop()
 
     def test_no_image_raises(self):
         from .containers import start_agent_container
@@ -781,22 +841,15 @@ class StartAgentContainerTests(TestCase):
         self.assertIn('build error', str(ctx.exception))
 
     def test_concurrency_limit(self):
-        import core.containers as containers_mod
         from .containers import start_agent_container
 
-        # Set counter to the limit
-        with containers_mod._container_lock:
-            old_count = containers_mod._container_count
-            containers_mod._container_count = 10
+        self.mock_acquire.side_effect = RuntimeError(
+            "Container concurrency limit reached (10/10). Try again later."
+        )
 
-        try:
-            with self.settings(FUZZYCLAW_MAX_CONTAINERS=10):
-                with self.assertRaises(RuntimeError) as ctx:
-                    start_agent_container('test-agent', 'do stuff', self.agent_run.id, self.run.id)
-                self.assertIn('concurrency limit', str(ctx.exception))
-        finally:
-            with containers_mod._container_lock:
-                containers_mod._container_count = old_count
+        with self.assertRaises(RuntimeError) as ctx:
+            start_agent_container('test-agent', 'do stuff', self.agent_run.id, self.run.id)
+        self.assertIn('concurrency limit', str(ctx.exception))
 
     @patch('core.containers.get_docker_client')
     def test_successful_start_returns_container_id(self, mock_get_client):
@@ -820,8 +873,7 @@ class StartAgentContainerTests(TestCase):
         mock_container.remove.assert_not_called()
 
     @patch('core.containers.get_docker_client')
-    def test_start_increments_container_counter(self, mock_get_client):
-        import core.containers as containers_mod
+    def test_start_acquires_container_slot(self, mock_get_client):
         from .containers import start_agent_container
 
         mock_client = MagicMock()
@@ -829,16 +881,15 @@ class StartAgentContainerTests(TestCase):
         mock_client.containers.list.return_value = []
 
         mock_container = MagicMock()
-        mock_container.id = 'counter-test'
+        mock_container.id = 'slot-test'
         mock_client.containers.run.return_value = mock_container
 
-        self.assertEqual(containers_mod._container_count, 0)
-
         start_agent_container(
-            'test-agent', 'test count', self.agent_run.id, self.run.id,
+            'test-agent', 'test slot', self.agent_run.id, self.run.id,
         )
 
-        self.assertEqual(containers_mod._container_count, 1)
+        self.mock_acquire.assert_called_once_with(self.agent_run.id)
+        self.mock_release.assert_not_called()
 
     @patch('core.containers.get_docker_client')
     def test_start_passes_redis_env_vars(self, mock_get_client):
@@ -864,30 +915,26 @@ class StartAgentContainerTests(TestCase):
 
 
     @patch('core.containers.get_docker_client')
-    def test_container_count_rolls_back_on_docker_failure(self, mock_get_client):
+    def test_container_slot_released_on_docker_failure(self, mock_get_client):
         """Container slot must be released if containers.run fails."""
-        import core.containers as containers_mod
         from .containers import start_agent_container
 
         mock_get_client.side_effect = Exception("Docker daemon unreachable")
-        containers_mod._container_count = 0
 
         with self.assertRaises(Exception):
             start_agent_container('test-agent', 'fail test', self.agent_run.id, self.run.id)
 
-        self.assertEqual(containers_mod._container_count, 0)
+        self.mock_acquire.assert_called_once_with(self.agent_run.id)
+        self.mock_release.assert_called_once_with(self.agent_run.id)
 
     @patch('core.containers.get_docker_client')
-    def test_container_count_rolls_back_on_volume_validation_failure(self, mock_get_client):
+    def test_container_slot_released_on_volume_validation_failure(self, mock_get_client):
         """Container slot must be released if volume validation fails."""
-        import core.containers as containers_mod
         from .containers import start_agent_container
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
-        containers_mod._container_count = 0
 
-        # Use an agent with a blocked volume mount
         with self.settings(FUZZYCLAW_VOLUME_BLOCKLIST=['/etc']):
             with patch('core.containers.get_agent') as mock_agent:
                 mock_agent.return_value = {
@@ -899,7 +946,8 @@ class StartAgentContainerTests(TestCase):
                 with self.assertRaises(RuntimeError):
                     start_agent_container('test-agent', 'vol fail', self.agent_run.id, self.run.id)
 
-        self.assertEqual(containers_mod._container_count, 0)
+        self.mock_acquire.assert_called_once_with(self.agent_run.id)
+        self.mock_release.assert_called_once_with(self.agent_run.id)
 
 
 class DispatchSpecialistTests(TestCase):
@@ -931,33 +979,24 @@ class DispatchSpecialistTests(TestCase):
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def test_dispatch_agent_not_found(self):
-        from .agent_tools import dispatch_specialist
+        from .agent_tools import make_dispatch_specialist
+        dispatch_specialist = make_dispatch_specialist(self.run)
         result = dispatch_specialist.invoke({
             'agent_name': 'nonexistent',
             'task_description': 'do stuff',
-            'run_id': self.run.id,
-        })
-        self.assertIn('not found', result)
-
-    def test_dispatch_run_not_found(self):
-        from .agent_tools import dispatch_specialist
-        result = dispatch_specialist.invoke({
-            'agent_name': 'test-agent',
-            'task_description': 'do stuff',
-            'run_id': 99999,
         })
         self.assertIn('not found', result)
 
     @patch('core.containers.start_agent_container')
     def test_dispatch_returns_agent_run_id(self, mock_start):
-        from .agent_tools import dispatch_specialist
+        from .agent_tools import make_dispatch_specialist
 
         mock_start.return_value = 'container123'
+        dispatch_specialist = make_dispatch_specialist(self.run)
 
         result = dispatch_specialist.invoke({
             'agent_name': 'test-agent',
             'task_description': 'summarize this',
-            'run_id': self.run.id,
         })
 
         self.assertIn('agent_run_id=', result)
@@ -972,14 +1011,14 @@ class DispatchSpecialistTests(TestCase):
 
     @patch('core.containers.start_agent_container')
     def test_dispatch_exception_deletes_agent_run(self, mock_start):
-        from .agent_tools import dispatch_specialist
+        from .agent_tools import make_dispatch_specialist
 
         mock_start.side_effect = RuntimeError('No image built')
+        dispatch_specialist = make_dispatch_specialist(self.run)
 
         result = dispatch_specialist.invoke({
             'agent_name': 'test-agent',
             'task_description': 'do something',
-            'run_id': self.run.id,
         })
 
         self.assertIn('dispatch failed', result)
@@ -1292,11 +1331,18 @@ class VolumeLaunchTests(TestCase):
         settings.FUZZYCLAW_AGENTS_DIR = self._agents_dir
         clear_cache()
 
+        self._acquire_patcher = patch('core.containers._acquire_container_slot')
+        self._release_patcher = patch('core.containers._release_container_slot')
+        self.mock_acquire = self._acquire_patcher.start()
+        self.mock_release = self._release_patcher.start()
+
     def tearDown(self):
         settings.FUZZYCLAW_AGENTS_DIR = self._orig_agents_dir
         clear_cache()
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        self._acquire_patcher.stop()
+        self._release_patcher.stop()
 
     @patch('core.containers.get_docker_client')
     def test_start_with_volumes_passes_mounts(self, mock_get_client):
@@ -2436,34 +2482,26 @@ class APIIsolationTests(TestCase):
         self.assertIn(self.run_a.id, ids)
         self.assertNotIn(self.run_b.id, ids)
 
-    def test_user_cannot_create_run_on_other_users_briefing(self):
-        resp = self.client_a.post('/api/runs/', {
-            'briefing': self.briefing_b.id,
-            'status': 'pending',
-        })
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('briefing', resp.data)
+    def test_user_cannot_launch_other_users_briefing(self):
+        """User A cannot launch user B's briefing — cross-user isolation
+        applies to the launch action too."""
+        resp = self.client_a.post(f'/api/briefings/{self.briefing_b.id}/launch/')
+        self.assertEqual(resp.status_code, 404)
 
-    def test_user_cannot_create_agent_run_on_other_users_run(self):
-        resp = self.client_a.post('/api/agent-runs/', {
-            'run': self.run_b.id,
-            'agent_name': 'test-agent',
-            'status': 'pending',
-        })
-        self.assertEqual(resp.status_code, 400)
-        self.assertIn('run', resp.data)
-
-    def test_user_can_create_run_on_own_briefing(self):
-        resp = self.client_a.post('/api/runs/', {
-            'briefing': self.briefing_a.id,
-            'status': 'pending',
-        })
+    @patch('core.tasks.launch_coordinator.delay')
+    def test_user_can_launch_own_briefing(self, mock_delay):
+        resp = self.client_a.post(f'/api/briefings/{self.briefing_a.id}/launch/')
         self.assertEqual(resp.status_code, 201)
+        mock_delay.assert_called_once()
 
-    def test_user_can_create_agent_run_on_own_run(self):
-        resp = self.client_a.post('/api/agent-runs/', {
-            'run': self.run_a.id,
-            'agent_name': 'test-agent',
-            'status': 'pending',
-        })
-        self.assertEqual(resp.status_code, 201)
+    def test_user_cannot_cancel_other_users_run(self):
+        self.run_b.status = 'running'
+        self.run_b.save()
+        resp = self.client_a.post(f'/api/runs/{self.run_b.id}/cancel/')
+        self.assertEqual(resp.status_code, 404)
+
+    def test_user_cannot_annotate_other_users_run(self):
+        resp = self.client_a.patch(f'/api/runs/{self.run_b.id}/notes/', {
+            'user_notes': 'hostile',
+        }, format='json')
+        self.assertEqual(resp.status_code, 404)

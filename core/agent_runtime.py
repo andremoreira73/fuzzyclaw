@@ -61,11 +61,11 @@ def build_coordinator(briefing, run):
 
     from .agent_tools import (
         check_reports,
-        dispatch_specialist,
         list_available_agents,
-        manage_schedule,
+        make_dispatch_specialist,
+        make_manage_schedule,
+        make_submit_coordinator_report,
         read_report,
-        submit_coordinator_report,
     )
 
     model = get_model(briefing.coordinator_model)
@@ -105,11 +105,11 @@ def build_coordinator(briefing, run):
 
     tools = [
         list_available_agents,
-        dispatch_specialist,
+        make_dispatch_specialist(run),
         check_reports,
         read_report,
-        submit_coordinator_report,
-        manage_schedule,
+        make_submit_coordinator_report(run),
+        make_manage_schedule(briefing),
     ]
 
     middleware = [CoordinatorGuardMiddleware(run.id)]

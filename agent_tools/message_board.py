@@ -70,12 +70,16 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
             message: The message content. Keep it short; for long content, write
                      a file to your comms directory and reference the path here.
         """
-        redis_client.xadd(stream_key, {
-            'from': self_id,
-            'to': to,
-            'content': message,
-            'ts': datetime.now(timezone.utc).isoformat(),
-        })
+        try:
+            redis_client.xadd(stream_key, {
+                'from': self_id,
+                'to': to,
+                'content': message,
+                'ts': datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as e:
+            logger.warning("Board post failed: %s", e)
+            return f"Error: message board unavailable ({e}). Retry the tool call."
         logger.info("Board: %s -> %s: %s", self_id, to, message[:100])
         return f"Message posted to {to}."
 
@@ -99,6 +103,7 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
 
         messages = []
         deadline = time.time() + wait_seconds
+        read_error: Exception | None = None
 
         while True:
             remaining_ms = max(100, int((deadline - time.time()) * 1000)) if wait_seconds > 0 else None
@@ -111,6 +116,7 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                 )
             except Exception as e:
                 logger.warning("Board read failed: %s", e)
+                read_error = e
                 break
 
             if streams:
@@ -136,6 +142,9 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
 
         if messages:
             logger.info("Board: %s received %d message(s)", self_id, len(messages))
+            return json.dumps(messages)
+        if read_error is not None:
+            return f"Error: message board unavailable ({read_error}). Retry the tool call."
         return json.dumps(messages)
 
     @tool
@@ -146,7 +155,11 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
         'summarizer_456']). Use this to discover who else is working on the
         same run before sending them a message.
         """
-        members = redis_client.smembers(participants_key)
+        try:
+            members = redis_client.smembers(participants_key)
+        except Exception as e:
+            logger.warning("Board list_participants failed: %s", e)
+            return f"Error: message board unavailable ({e}). Retry the tool call."
         participants = sorted(members)
         logger.info("Board: %s listed %d participants", self_id, len(participants))
         return json.dumps(participants)

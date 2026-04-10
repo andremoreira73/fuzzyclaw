@@ -1,5 +1,6 @@
+from django.utils import timezone
 from rest_framework import serializers as drf_serializers
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -70,9 +71,32 @@ class BriefingViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
+    @action(detail=True, methods=['post'])
+    def launch(self, request, pk=None):
+        """Create a new Run for this briefing and dispatch the coordinator."""
+        from .tasks import launch_coordinator
 
-class RunViewSet(viewsets.ModelViewSet):
-    """Full CRUD for runs. Scoped to the authenticated user's briefings."""
+        briefing = self.get_object()
+        run = Run.objects.create(
+            briefing=briefing,
+            status='pending',
+            triggered_by='manual',
+        )
+        launch_coordinator.delay(run.id)
+        serializer = RunSerializer(run, context={'request': request})
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class RunViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only access to runs. Runs are launched via
+    ``POST /api/briefings/{id}/launch/`` and cancelled via
+    ``POST /api/runs/{id}/cancel/``. Execution state (status, reports,
+    timestamps) is written by the coordinator via the ORM — not through the
+    REST API — so the run log remains a trustworthy audit surface.
+
+    User annotations go in ``user_notes`` via
+    ``PATCH /api/runs/{id}/notes/``.
+    """
     serializer_class = RunSerializer
     filterset_fields = ['briefing', 'status', 'triggered_by']
     ordering_fields = ['created_at', 'started_at', 'completed_at']
@@ -84,22 +108,6 @@ class RunViewSet(viewsets.ModelViewSet):
             .prefetch_related('agent_runs')
         )
 
-    def perform_create(self, serializer):
-        briefing = serializer.validated_data.get('briefing')
-        if briefing and briefing.owner != self.request.user:
-            raise drf_serializers.ValidationError(
-                {'briefing': 'You do not own this briefing.'}
-            )
-        serializer.save()
-
-    def perform_update(self, serializer):
-        briefing = serializer.validated_data.get('briefing')
-        if briefing and briefing.owner != self.request.user:
-            raise drf_serializers.ValidationError(
-                {'briefing': 'You do not own this briefing.'}
-            )
-        serializer.save()
-
     @action(detail=False, methods=['get'])
     def pending(self, request):
         """Get all pending runs (for the coordinator to pick up)."""
@@ -107,9 +115,44 @@ class RunViewSet(viewsets.ModelViewSet):
         serializer = self.get_serializer(pending, many=True)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Mark a stuck or unwanted run as failed. Useful for operational
+        cleanup when a run is stranded in ``running`` status."""
+        run = self.get_object()
+        if run.status in ('completed', 'failed'):
+            return Response(
+                {'detail': f"Run is already {run.status}."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        run.status = 'failed'
+        run.error_message = 'Cancelled by user.'
+        run.completed_at = timezone.now()
+        run.save(update_fields=['status', 'error_message', 'completed_at'])
+        serializer = self.get_serializer(run)
+        return Response(serializer.data)
 
-class AgentRunViewSet(viewsets.ModelViewSet):
-    """CRUD for agent runs. Scoped to the authenticated user's runs."""
+    @action(detail=True, methods=['patch'])
+    def notes(self, request, pk=None):
+        """Update the user_notes field on this run. The only user-mutable
+        field — everything else is read-only."""
+        run = self.get_object()
+        notes_text = request.data.get('user_notes', '')
+        if not isinstance(notes_text, str):
+            raise drf_serializers.ValidationError(
+                {'user_notes': 'Must be a string.'}
+            )
+        run.user_notes = notes_text
+        run.save(update_fields=['user_notes'])
+        serializer = self.get_serializer(run)
+        return Response(serializer.data)
+
+
+class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read-only access to agent runs. Execution state is written by the
+    coordinator via the ORM. Only ``user_notes`` is user-mutable, via
+    ``PATCH /api/agent-runs/{id}/notes/``.
+    """
     serializer_class = AgentRunSerializer
     filterset_fields = ['run', 'agent_name', 'status']
     ordering_fields = ['created_at', 'started_at', 'completed_at']
@@ -120,18 +163,16 @@ class AgentRunViewSet(viewsets.ModelViewSet):
             .select_related('run')
         )
 
-    def perform_create(self, serializer):
-        run = serializer.validated_data.get('run')
-        if run and run.briefing.owner != self.request.user:
+    @action(detail=True, methods=['patch'])
+    def notes(self, request, pk=None):
+        """Update the user_notes field on this agent run."""
+        agent_run = self.get_object()
+        notes_text = request.data.get('user_notes', '')
+        if not isinstance(notes_text, str):
             raise drf_serializers.ValidationError(
-                {'run': 'You do not own this run.'}
+                {'user_notes': 'Must be a string.'}
             )
-        serializer.save()
-
-    def perform_update(self, serializer):
-        run = serializer.validated_data.get('run')
-        if run and run.briefing.owner != self.request.user:
-            raise drf_serializers.ValidationError(
-                {'run': 'You do not own this run.'}
-            )
-        serializer.save()
+        agent_run.user_notes = notes_text
+        agent_run.save(update_fields=['user_notes'])
+        serializer = self.get_serializer(agent_run)
+        return Response(serializer.data)

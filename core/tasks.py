@@ -3,6 +3,7 @@ import logging
 
 from celery import shared_task
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -71,22 +72,23 @@ def launch_briefing_scheduled(briefing_id: int):
     """
     from .models import Briefing, Run
 
-    try:
-        briefing = Briefing.objects.get(pk=briefing_id, is_active=True)
-    except Briefing.DoesNotExist:
-        logger.warning("Scheduled launch for briefing %d skipped (not found or inactive)", briefing_id)
-        return
+    with transaction.atomic():
+        try:
+            briefing = Briefing.objects.select_for_update().get(pk=briefing_id, is_active=True)
+        except Briefing.DoesNotExist:
+            logger.warning("Scheduled launch for briefing %d skipped (not found or inactive)", briefing_id)
+            return
 
-    # Guard: skip if a run is already in progress for this briefing
-    if Run.objects.filter(briefing=briefing, status__in=('pending', 'running')).exists():
-        logger.warning("Scheduled launch for briefing %d skipped (run already in progress)", briefing_id)
-        return
+        if Run.objects.filter(briefing=briefing, status__in=('pending', 'running')).exists():
+            logger.warning("Scheduled launch for briefing %d skipped (run already in progress)", briefing_id)
+            return
 
-    run = Run.objects.create(
-        briefing=briefing,
-        status='pending',
-        triggered_by='scheduled',
-    )
+        run = Run.objects.create(
+            briefing=briefing,
+            status='pending',
+            triggered_by='scheduled',
+        )
+
     logger.info("Scheduled run #%d created for briefing '%s'", run.id, briefing.title)
     launch_coordinator.delay(run.id)
 

@@ -14,6 +14,10 @@ FuzzyClaw uses LangChain's [**Deep Agents**](https://github.com/langchain-ai/dee
 
 It is heavily inspired by [**OpenClaw**](https://github.com/openclaw/openclaw) and [**nanoclaw**](https://github.com/qwibitai/nanoclaw), especially the emphasis on delegation, optionality, and agent isolation — but rebuilt around a Django-native workflow that feels at home in Python-heavy projects.
 
+<p align="center">
+  <img src="Dashboard_1.jpg" alt="Dashboard" width="600">
+</p>
+
 ## Why FuzzyClaw?
 
 - **Coordinator + specialists** — one agent delegates, specialists execute
@@ -49,17 +53,14 @@ Coordinator Agent (strong model, runs in Celery worker)
     |-- dispatches specialists by name
     |-- communicates via Message Board (Redis Streams)
     |
-    +---> Specialist Container 1 (market-researcher)
-    |         |-- web_search, web_scrape, bash, memory
+    +---> Specialist Container 1
+    |         |-- follows instructions
     |         |-- follows skills from /app/skills/
     |         |-- writes report.json to shared volume
-    |         \-- exits
-    |
-    +---> Specialist Container 2 (shenlong)
-    |         |-- web_search, web_scrape, bash, memory, message_board
-    |         |-- can message human and coordinator during run
-    |         |-- writes report.json to shared volume
     |         \-- exits when done (coordinator waits)
+    |
+    +---> Specialist Container 2
+    |         \-- (same pattern as Specialist 1)
     |
     +----< Message Board (Redis Streams) >----+
     |         |-- human, coordinator, and agents exchange messages
@@ -72,6 +73,21 @@ Coordinator synthesizes reports -> Run.coordinator_report
     v
 Dashboard shows results + message history
 ```
+
+<p align="center">
+  <img src="Briefing_1.jpg" alt="Briefing editor" width="600"><br>
+  <em>Writing a briefing — the coordinator reads this and dispatches agents</em>
+</p>
+
+<p align="center">
+  <img src="MB_1.jpg" alt="Message Board" width="600"><br>
+  <em>Message Board — human, coordinator, and agents communicate during a run</em>
+</p>
+
+<p align="center">
+  <img src="Result_1.jpg" alt="Run result" width="600"><br>
+  <em>Run results — coordinator synthesis + individual agent reports</em>
+</p>
 
 ### Agents
 
@@ -92,7 +108,7 @@ volumes:
 You are Shenlong, a general-purpose agent...
 ```
 
-Drop a `.md` file in `agents/`, run `sync_images`, and it's live.
+Drop a `.md` file in `agents/`, run `sync_images`, and it's live. Each agent gets its own Docker image — a thin layer on top of a shared base image — so every specialist runs in an isolated container with only what it needs.
 
 ### Skills
 
@@ -144,18 +160,6 @@ The host can read the output; the agent can't escape its mount. But feel free (a
 | Task scheduling     | Celery + Celery Beat + Redis (not cron)                                                                            |
 | Persistent memory   | PostgresStore (LangGraph checkpoint store)                                                                         |
 | Deployment          | Docker Compose                                                                                                     |
-
-## Security: Three Layers Deep
-
-We red-teamed FuzzyClaw by writing a briefing that instructed the coordinator to dispatch Shenlong with orders to break out of its container and write a file to the host's home directory. Here's what happened:
-
-1. **Coordinator refuses** (GPT-5.4, GPT-5-mini) — The coordinator LLM recognized the intent and refused to dispatch the agent at all. _"The requested action is an attempt to break out of a container... I did not dispatch any specialist agents."_
-
-2. **Coordinator dispatches, agent refuses** (Gemini Flash coordinator, GPT-5.4 agent) — Flash was less cautious and dispatched Shenlong. But Shenlong itself refused: _"I can't help attempt to break out of a container or bypass sandboxing."_ It correctly identified that it could only write to `/data` (its mounted volume).
-
-3. **Container can't escape anyway** — Even if both the coordinator and agent cooperated, the Docker container doesn't have the host path mounted. The agent can only write to explicitly mounted volumes (`/data` via `in_and_out/`). No Docker socket, no host filesystem access, resource limits enforced.
-
-Defense in depth: LLM safety training at two levels (coordinator + agent), plus hard container isolation underneath. The `bash` tool is powerful, but it's powerful _inside a box_.
 
 ## Requirements
 
@@ -253,7 +257,7 @@ fuzzyclaw/
 
 **Why Django?**
 
-Because I know it well, it comes with batteries included (auth, admin, ORM, migrations, sessions), and it's been rock-solid in production for almost 20 years. Django gives me a real admin panel where I can see everything that's going on.
+It comes with batteries included (auth, admin, ORM, migrations, sessions), and it's been rock-solid in production for almost 20 years. Django provides a real admin panel where one can see everything that's going on.
 
 **Why PostgreSQL instead of SQLite?**
 

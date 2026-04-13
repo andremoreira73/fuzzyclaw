@@ -35,6 +35,19 @@ def _api_url(path: str) -> str:
     return f"{base}/{path.lstrip('/')}"
 
 
+def _owner_params(extra: dict | None = None) -> dict:
+    """Build query params with owner scoping if OWNER_ID is set.
+
+    When fuzzy runs with a service account token, OWNER_ID tells the API
+    whose data to return.
+    """
+    params = dict(extra) if extra else {}
+    owner_id = os.environ.get('OWNER_ID', '')
+    if owner_id:
+        params['owner'] = owner_id
+    return params
+
+
 def _api_get(path: str, params: dict | None = None) -> dict | list | str:
     """GET an API endpoint, return parsed JSON or error string."""
     try:
@@ -62,7 +75,7 @@ def build_platform_query_tools() -> list:
         Returns a JSON list of briefings (id, title, is_active, schedule_text,
         coordinator_model, created_at).
         """
-        data = _api_get('briefings/')
+        data = _api_get('briefings/', _owner_params())
         if isinstance(data, str):
             return data
         # DRF pagination: results may be in 'results' key
@@ -86,7 +99,7 @@ def build_platform_query_tools() -> list:
         Args:
             briefing_id: The briefing ID to retrieve.
         """
-        data = _api_get(f'briefings/{briefing_id}/')
+        data = _api_get(f'briefings/{briefing_id}/', _owner_params())
         if isinstance(data, str):
             return data
         return json.dumps(data, indent=2)
@@ -104,7 +117,7 @@ def build_platform_query_tools() -> list:
             params['briefing'] = briefing_id
         if status is not None:
             params['status'] = status
-        data = _api_get('runs/', params=params)
+        data = _api_get('runs/', params=_owner_params(params))
         if isinstance(data, str):
             return data
         results = data.get('results', data) if isinstance(data, dict) else data
@@ -128,7 +141,7 @@ def build_platform_query_tools() -> list:
         Args:
             run_id: The run ID to retrieve.
         """
-        data = _api_get(f'runs/{run_id}/')
+        data = _api_get(f'runs/{run_id}/', _owner_params())
         if isinstance(data, str):
             return data
         return json.dumps(data, indent=2)
@@ -140,7 +153,7 @@ def build_platform_query_tools() -> list:
         Args:
             run_id: The parent run ID.
         """
-        data = _api_get('agent-runs/', params={'run': run_id})
+        data = _api_get('agent-runs/', params=_owner_params({'run': run_id}))
         if isinstance(data, str):
             return data
         results = data.get('results', data) if isinstance(data, dict) else data
@@ -162,7 +175,7 @@ def build_platform_query_tools() -> list:
         Args:
             agent_run_id: The agent run ID to retrieve.
         """
-        data = _api_get(f'agent-runs/{agent_run_id}/')
+        data = _api_get(f'agent-runs/{agent_run_id}/', _owner_params())
         if isinstance(data, str):
             return data
         return json.dumps(data, indent=2)

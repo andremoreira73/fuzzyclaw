@@ -31,15 +31,19 @@ def get_memory_store(agent_name: str):
         return None
 
 
-def build_memory_tools(store, agent_name: str, owner_id: str):
+def build_memory_tools(store, agent_name: str, owner_id: str, briefing_id: str = ''):
     """Build recall/remember tools backed by PostgresStore.
 
-    Namespace is (owner_id, agent_name): memories are scoped per user per
-    agent. Two users running the same agent see completely separate memories.
+    Namespace is (owner_id, agent_name, briefing_id) for specialists, or
+    (owner_id, agent_name) for agents not tied to a briefing (e.g. fuzzy).
+    Memories are scoped per user, per agent, per briefing — no leakage.
     """
     if not owner_id:
         raise ValueError("build_memory_tools requires a non-empty owner_id")
-    namespace = (owner_id, agent_name)
+    if briefing_id:
+        namespace = (owner_id, agent_name, briefing_id)
+    else:
+        namespace = (owner_id, agent_name)
 
     @tool
     def remember(key: str, content: str) -> str:

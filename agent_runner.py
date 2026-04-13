@@ -207,16 +207,17 @@ Complete the task given to you and return a clear, structured report of your fin
 
             if store is not None:
                 owner_id = os.environ.get('OWNER_ID', '')
+                briefing_id = os.environ.get('BRIEFING_ID', '')
                 if not owner_id:
                     logger.warning(
                         "OWNER_ID env var missing — memory tools disabled to prevent cross-user leakage"
                     )
                 else:
-                    memory_tools = build_memory_tools(store, agent_def['name'], owner_id)
+                    memory_tools = build_memory_tools(store, agent_def['name'], owner_id, briefing_id)
                     agent_tools.extend(memory_tools)
                     logger.info(
-                        "Memory tools enabled: remember, recall, recall_all (namespace: owner=%s, agent=%s)",
-                        owner_id, agent_def['name'],
+                        "Memory tools enabled (namespace: owner=%s, agent=%s, briefing=%s)",
+                        owner_id, agent_def['name'], briefing_id or '(global)',
                     )
 
             if board:

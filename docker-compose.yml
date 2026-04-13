@@ -47,6 +47,8 @@ services:
 
   redis:
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065  # redis:7-alpine
+    volumes:
+      - redis_data:/data
     # No host port exposure — only reachable on the Docker network
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -109,7 +111,7 @@ services:
     volumes:
       - ./skills:/app/skills:ro
       - ./agents/fuzzy.md:/app/agent.md:ro
-      - ./data/users/1:/app/data:rw
+      - ./data:/app/data:rw
     depends_on:
       db:
         condition: service_healthy
@@ -121,13 +123,16 @@ services:
       - AGENT_FILE=/app/agent.md
       - SELF_ID=fuzzy
       - BOARD_STREAM=fuzzy
-      - OWNER_ID=1
+      - OWNER_ID=${FUZZYCLAW_FUZZY_OWNER_ID:-}
       - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
       - REDIS_URL=redis://redis:6379/1
       - API_BASE_URL=http://web:8200/api
       - API_TOKEN=${FUZZYCLAW_FUZZY_API_TOKEN:-}
       - MODEL_DEFAULTS={"temperature":1,"reasoning_effort":"high","use_responses_api":true}
       - AGENT_VOLUMES=[{"mount":"/app/data","mode":"rw"}]
+      - FUZZY_HISTORY_MAX=15
+      - FUZZY_HISTORY_KEEP_RECENT=3
+      - FUZZY_SUMMARY_MODEL=gemini-2.5-flash
       - PYTHONUNBUFFERED=1
       # LLM API Keys
       - OPENAI_API_KEY=${OPENAI_API_KEY}
@@ -144,6 +149,7 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:
 
 networks:
   default:

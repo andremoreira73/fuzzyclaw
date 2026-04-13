@@ -76,18 +76,25 @@ Persistent agent ("fuzzy") that starts with `docker compose up` and stays alive 
 
 **Container:** `Dockerfile.fuzzy` (same base as `Dockerfile.agent`, different entrypoint). Skills mounted read-only, user data mounted read-write at `/app/data`.
 
-**Multi-user path:** One fuzzy container serves all users. The container is stateless between conversations — per-user scoping comes from the message sender:
-- Memory namespace: `(sender_user_id, "fuzzy")`
-- Board streams: `fuzzyclaw:board:fuzzy:{user_id}` (per-user, for privacy)
-- Platform queries: service account token + `?owner=<sender_id>` filter on the API
-- Phase 1 (current): single-user, `OWNER_ID=1` hardcoded, user's own DRF token
-- Phase 2: service account user, API ViewSets accept `?owner=` param for service accounts, per-user board streams, `OWNER_ID` derived from message sender
+**Multi-user (implemented):** One fuzzy container serves all users. The container is stateless between conversations — per-user scoping comes from the message sender:
+
+- `user_id` field in every board message (set by Django view, read by fuzzy runner)
+- Memory namespace: `(sender_user_id, "fuzzy")` — derived from message, not env var
+- Board stream: single stream, filtered by `user_id` in Django views (each user sees only their conversation)
+- Platform queries: service account token (staff user) + `?owner=<sender_id>` filter on all API ViewSets
+- `OWNER_ID` env var is now optional fallback (empty by default), data volume mounted at `./data` (all users)
 
 **Activity indicator:** Redis key `fuzzyclaw:fuzzy:status` set to `"thinking"` while processing (auto-expires after 5min). Board panel polls `/board/fuzzy/status/` every 2s. Shows bouncing-dot typing indicator in the feed area and a `●` prefix on "Fuzzy Assistant" in the run selector. Both disappear when fuzzy finishes.
 
 **Board tools `initial_position`:** `setup_message_board()` accepts an `initial_position` parameter (default `'0-0'`). Fuzzy passes the triggering message's stream ID so the agent's `read_messages` tool starts after the trigger, not from the beginning of the permanent stream.
 
 **Duplicate-post prevention:** After the agent's ReAct loop, the runner checks the last 5 stream entries. If fuzzy already posted via the board tool, the safety-net post is skipped.
+
+**Conversational memory (implemented):** Board history is read before each invocation and passed as HumanMessage/AIMessage pairs. Living summary approach: up to 15 messages pass as-is. Over 15, a cheap LLM (Gemini Flash) summarizes older messages, keeps last 3 interaction pairs. Summary stored in Redis (`fuzzyclaw:fuzzy:summary:{owner_id}`), compounds across cycles. Config: `FUZZY_HISTORY_MAX=15`, `FUZZY_HISTORY_KEEP_RECENT=3`, `FUZZY_SUMMARY_MODEL=gemini-2.5-flash`.
+
+**Briefing-scoped agent memories (implemented):** Specialist memory namespace is now `(owner_id, agent_name, briefing_id)`. `BRIEFING_ID` env var passed from `containers.py` to agent containers. Fuzzy stays at `(owner_id, "fuzzy")` — global, not tied to a briefing. Briefing ID shown in the UI (list + detail page) so users understand memory compartmentalization.
+
+**Redis persistence (implemented):** Named volume `redis_data:/data` added. Board streams, fuzzy summaries, and conversation history survive `docker compose down`/`up`. Redis saves RDB on graceful shutdown (SIGTERM).
 
 **Setup (phase 1):** Create a DRF auth token (Admin > Auth Token > Tokens, or `docker compose exec web python manage.py drf_create_token <username>`), set it as `FUZZYCLAW_FUZZY_API_TOKEN` in `.env`, then `docker compose up -d fuzzy`.
 
@@ -110,7 +117,7 @@ To do:
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Cross-board @fuzzy — wake fuzzy from within any run board (forward message to fuzzy's stream with run context, respond on the originating run board)
-- Fuzzy multi-user (phase 2) — service account, `?owner=` API filter, per-user board streams, derive OWNER_ID from sender
+- Flush fuzzy conversation button — clear the board stream + living summary for the current user (Django view + board panel UI)
 
 DONE: Fuzzy: the assistant (2026-04-13)
 
@@ -118,6 +125,10 @@ DONE: Fuzzy: the assistant (2026-04-13)
 - accessible via chat board even when no run is going on
 - oversees the whole thing, not only one specific briefing
 - typing indicator + pulsing dot while thinking
+- conversational memory with living summary (board history + Gemini Flash summarization)
+- briefing-scoped agent memories (`owner_id.agent_name.briefing_id`)
+- multi-user scoping (`user_id` in messages, service account API filter, per-user memory)
+- Redis persistence for board streams and summaries
 - supersedes "Direct agent dispatch" idea
 
 DONE: Direct agent dispatch — superseded by fuzzy (always available, does specialist work via skills)
@@ -159,8 +170,14 @@ Ideas:
 
 - **`forget` memory tool** — Extension of the `(owner_id, agent_name)` namespace. Agent-side tool calling `store.delete(namespace=(owner_id, agent_name), key=...)`. Variants: `forget(key)` for a single entry, `forget_all()` to wipe the namespace. Scoped by construction, no cross-user leakage. Lives alongside `remember`/`recall`/`recall_all` in `agent_tools/memory.py`.
 
+- **Memory TTL / expiration** — PostgresStore already has `expires_at` and `ttl_minutes` columns. `store.put()` accepts `ttl_minutes`. Options: default TTL on specialist memories (e.g. 30 days, stale findings auto-expire), no TTL on fuzzy (user preferences persist), or agent-controlled TTL via an optional `expires_in_days` param on the `remember` tool so the LLM decides what's ephemeral vs permanent.
+
 - **VM deployment over HTTPS** — Caddy sidecar in compose for zero-config Let's Encrypt, reverse-proxy to `web:8000`. **Prerequisite: finish remaining deployment hardening (SRI hashes, attack surface, port exposure) before going public.**
 
 - **"Infinite briefing" — coordinator always on** — Not feasible today (Celery time limits, container timeouts, context window). **Path A — periodic wake-up** works now: schedule the briefing every N minutes, each run reads memory, does a step, writes back, exits. "Cron for LLMs." **Path B — persistent session** needs a `Session` model, long-lived process outside Celery, LangGraph checkpointing — only worth it if sub-minute latency matters.
 
 - **Auto-start on laptop boot** — Simplest path: add `restart: unless-stopped` to every service in `docker-compose.yml` and run `docker compose up -d` once. As long as Docker itself auto-starts, everything comes back. No systemd unit to maintain. Reach for a systemd user service (`~/.config/systemd/user/fuzzyclaw.service` with `After=docker.service`) only if you need explicit boot-time ordering or better logging.
+
+### Memory & scoping overhaul (2026-04-13)
+
+Three changes shipped together: briefing-scoped specialist memories (`owner_id.agent_name.briefing_id` namespace via `BRIEFING_ID` env var), fuzzy conversational memory (board-history-as-context with living summary via Gemini Flash), and per-user fuzzy scoping (`user_id` in board messages, `?owner=` API filter for staff, dynamic `OWNER_ID`). Redis persistence added (`redis_data` volume) so board streams and summaries survive restarts. Old un-scoped memories wiped. Full plan: `code_reviews/fuzzy-memory-and-scoping.md`.

@@ -41,7 +41,9 @@ def get_board_redis():
         return None
 
 
-def build_message_board_tools(redis_client, self_id: str, run_id: str, initial_position: str = '0-0') -> list:
+def build_message_board_tools(redis_client, self_id: str, run_id: str,
+                              initial_position: str = '0-0',
+                              extra_fields: dict | None = None) -> list:
     """Build LangChain tools for the message board.
 
     Args:
@@ -50,6 +52,8 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str, initial_p
         run_id: Current run ID.
         initial_position: Starting stream position for read_messages (default
             '0-0' reads all history). Pass a message ID to skip earlier entries.
+        extra_fields: Optional dict of extra fields to include in every xadd
+            (e.g. {'user_id': '1'} for multi-user scoping).
 
     Returns:
         List of @tool functions: post_message, read_messages, list_participants.
@@ -60,6 +64,8 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str, initial_p
     # lifetime to match when message_board is in the tools list.
     max_wait = int(os.environ.get('FUZZYCLAW_HITL_TIMEOUT', '1800'))
     agent_wait = int(os.environ.get('FUZZYCLAW_AGENT_TIMEOUT', '600'))
+
+    _extra = extra_fields or {}
 
     # Track read position across calls within this agent's lifetime
     last_seen_id = initial_position
@@ -76,12 +82,14 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str, initial_p
                      a file to your comms directory and reference the path here.
         """
         try:
-            redis_client.xadd(stream_key, {
+            entry = {
                 'from': self_id,
                 'to': to,
                 'content': message,
                 'ts': datetime.now(timezone.utc).isoformat(),
-            })
+                **_extra,
+            }
+            redis_client.xadd(stream_key, entry)
         except Exception as e:
             logger.warning("Board post failed: %s", e)
             return f"Error: message board unavailable ({e}). Retry the tool call."
@@ -194,7 +202,7 @@ class BoardSetup:
         self.prompt_section = prompt_section
 
 
-def setup_message_board(redis_client, self_id: str, run_id: str, initial_position: str = '0-0') -> BoardSetup | None:
+def setup_message_board(redis_client, self_id: str, run_id: str, initial_position: str = '0-0', extra_fields: dict | None = None) -> BoardSetup | None:
     """Set up all message board components for an agent.
 
     Handles participant registration, tool creation, middleware creation,
@@ -223,7 +231,7 @@ def setup_message_board(redis_client, self_id: str, run_id: str, initial_positio
         logger.warning("Message board registration failed: %s", e)
         return None
 
-    tools = build_message_board_tools(redis_client, self_id, run_id, initial_position)
+    tools = build_message_board_tools(redis_client, self_id, run_id, initial_position, extra_fields)
 
     from agent_tools.board_middleware import BoardNotificationMiddleware
     middleware = [BoardNotificationMiddleware(redis_client, self_id, run_id)]

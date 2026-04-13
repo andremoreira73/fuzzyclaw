@@ -2398,8 +2398,7 @@ class BoardViewTests(TestCase):
         mock_r.xlen.return_value = 5  # stream has messages
         mock_get_redis.return_value = mock_r
 
-        with patch('core.views.FUZZY_OWNER_ID', self.user.id):
-            resp = self.client.get('/board/active-runs/')
+        resp = self.client.get('/board/active-runs/')
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.content)
         # First entry is always fuzzy, then run boards with messages
@@ -2417,8 +2416,7 @@ class BoardViewTests(TestCase):
         mock_r.xlen.return_value = 0
         mock_get_redis.return_value = mock_r
 
-        with patch('core.views.FUZZY_OWNER_ID', self.user.id):
-            resp = self.client.get('/board/active-runs/')
+        resp = self.client.get('/board/active-runs/')
         data = json.loads(resp.content)
         # Only fuzzy remains when no run streams have messages
         self.assertEqual(len(data), 1)

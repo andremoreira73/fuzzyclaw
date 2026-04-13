@@ -550,6 +550,7 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         agent_run = AgentRun.objects.select_related('run__briefing__owner').get(pk=agent_run_id)
         owner_id = agent_run.run.briefing.owner_id
         env['OWNER_ID'] = str(owner_id)
+        env['BRIEFING_ID'] = str(agent_run.run.briefing_id)
     except AgentRun.DoesNotExist:
         logger.warning(
             "AgentRun %d not found while resolving OWNER_ID — memory and user volumes unavailable",

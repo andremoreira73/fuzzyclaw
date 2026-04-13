@@ -19,9 +19,10 @@ env/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
-/static/
 /staticfiles/
 /media/
+# Tailwind build output (rebuilt from static/css/input.css)
+static/css/tailwind.css
 
 # Environment
 .env

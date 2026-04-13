@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+/* Restore Tailwind v3 default: border-color gray-200 instead of currentColor */
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop {
+    border-color: var(--color-gray-200, #e5e7eb);
+  }
+}

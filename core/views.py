@@ -11,7 +11,7 @@ from django.contrib.auth.views import PasswordChangeDoneView, PasswordChangeView
 from django.http import HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.utils import timezone as dj_timezone
 from django.views.decorators.http import require_POST
 
@@ -101,7 +101,7 @@ def briefing_create(request):
         'nav': 'briefings',
         'model_choices': settings.FUZZYCLAW_MODEL_CHOICES,
         'breadcrumbs': [
-            {'label': 'Briefings', 'url': '/briefings/'},
+            {'label': 'Briefings', 'url': reverse('core:briefing_list')},
             {'label': 'New'},
         ],
     }
@@ -117,11 +117,11 @@ def briefing_detail(request, pk):
         'briefing': briefing,
         'runs': runs,
         'model_choices': settings.FUZZYCLAW_MODEL_CHOICES,
-        'toggle_url': f'/briefings/{briefing.pk}/toggle/',
-        'model_url': f'/briefings/{briefing.pk}/model/',
+        'toggle_url': reverse('core:briefing_toggle', args=[briefing.pk]),
+        'model_url': reverse('core:briefing_model', args=[briefing.pk]),
         'schedule_status': get_schedule_status(briefing),
         'breadcrumbs': [
-            {'label': 'Briefings', 'url': '/briefings/'},
+            {'label': 'Briefings', 'url': reverse('core:briefing_list')},
             {'label': briefing.title},
         ],
     }
@@ -180,7 +180,7 @@ def briefing_toggle(request, pk):
         'checked': briefing.is_active,
         'label': 'Active',
         'hint': "Inactive briefings won't run on schedule.",
-        'toggle_url': f'/briefings/{briefing.pk}/toggle/',
+        'toggle_url': reverse('core:briefing_toggle', args=[briefing.pk]),
     }, request=request)
     return HttpResponse(html)
 
@@ -197,7 +197,7 @@ def briefing_model(request, pk):
     html = render_to_string('core/partials/model_select.html', {
         'selected': briefing.coordinator_model,
         'model_choices': settings.FUZZYCLAW_MODEL_CHOICES,
-        'model_url': f'/briefings/{briefing.pk}/model/',
+        'model_url': reverse('core:briefing_model', args=[briefing.pk]),
     }, request=request)
     return HttpResponse(html)
 
@@ -266,8 +266,8 @@ def run_detail(request, pk):
         'run': run,
         'agent_runs': agent_runs,
         'breadcrumbs': [
-            {'label': 'Briefings', 'url': '/briefings/'},
-            {'label': run.briefing.title, 'url': f'/briefings/{run.briefing.pk}/'},
+            {'label': 'Briefings', 'url': reverse('core:briefing_list')},
+            {'label': run.briefing.title, 'url': reverse('core:briefing_detail', args=[run.briefing.pk])},
             {'label': f'Run #{run.id}'},
         ],
     }

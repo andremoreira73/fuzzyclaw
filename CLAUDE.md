@@ -184,6 +184,8 @@ DATABASE_URL=sqlite:///test.db python manage.py test core
 ## Build & Run (quick reference)
 
 ```bash
+tailwindcss -i static/css/input.css -o static/css/tailwind.css --minify  # build CSS (once)
+tailwindcss -i static/css/input.css -o static/css/tailwind.css --watch   # dev: rebuild on change
 docker compose up -d                                      # start platform
 docker compose exec web python manage.py sync_images      # build agent images
 ./sync_agents.sh                                          # after editing agents
@@ -197,7 +199,7 @@ DATABASE_URL=sqlite:///test.db python manage.py test core  # run tests locally
 | Layer | Technology |
 |-------|-----------|
 | Web/Auth/ORM | Django 5.1 + PostgreSQL |
-| Frontend | HTMX 2.0 + Tailwind CDN + Alpine.js (in Django templates) |
+| Frontend | HTMX 2.0 + Tailwind CSS (local CLI build) + Alpine.js (in Django templates) |
 | Agent orchestration | Deep Agents (LangChain/LangGraph) |
 | Coordinator LLM | Claude Opus / Gemini 2.5 Pro |
 | Specialist LLMs | GPT-5-mini / Gemini Flash / GPT-5.4 (configurable per agent) |

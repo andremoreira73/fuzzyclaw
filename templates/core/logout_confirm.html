@@ -1,28 +1,24 @@
-{% extends "base.html" %}
+{% extends "core/base_auth.html" %}
 {% block title %}Sign Out — FuzzyClaw{% endblock title %}
 
-{% block content %}
-<div class="flex items-center justify-center min-h-[60vh]">
-    <div class="w-full max-w-md">
-        <div class="bg-white rounded-xl shadow-md p-8 border border-gray-100 text-center">
-            <div class="mb-4">
-                <i class="fas fa-sign-out-alt text-4xl text-gray-400"></i>
-            </div>
-            <h2 class="text-2xl font-bold text-gray-900 mb-4">Sign Out</h2>
-            <p class="text-gray-600 mb-6">Are you sure you want to sign out?</p>
+{% block card_extra_class %} text-center{% endblock card_extra_class %}
 
-            <form method="post" action="{% url 'logout' %}">
-                {% csrf_token %}
-                <button type="submit"
-                        class="w-full mb-3 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200">
-                    Yes, Sign Me Out
-                </button>
-            </form>
-
-            <a href="{% url 'core:dashboard' %}" class="text-sm text-gray-600 hover:text-gray-900">
-                Cancel
-            </a>
-        </div>
-    </div>
+{% block card_content %}
+<div class="mb-4">
+    <i class="fas fa-sign-out-alt text-4xl text-gray-400"></i>
 </div>
-{% endblock content %}
+<h2 class="text-2xl font-bold text-gray-900 mb-4">Sign Out</h2>
+<p class="text-gray-600 mb-6">Are you sure you want to sign out?</p>
+
+<form method="post" action="{% url 'logout' %}">
+    {% csrf_token %}
+    <button type="submit"
+            class="w-full mb-3 px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-semibold rounded-lg shadow-lg hover:shadow-xl transform hover:-translate-y-0.5 transition-all duration-200">
+        Yes, Sign Me Out
+    </button>
+</form>
+
+<a href="{% url 'core:dashboard' %}" class="text-sm text-gray-600 hover:text-gray-900">
+    Cancel
+</a>
+{% endblock card_content %}

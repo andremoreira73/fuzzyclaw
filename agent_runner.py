@@ -14,10 +14,12 @@ Env vars:
 import json
 import logging
 import os
+import re
 import sys
-
-import yaml
 import traceback
+
+import redis as redis_lib
+import yaml
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
@@ -50,8 +52,7 @@ def signal_completion(status: str):
         return
 
     try:
-        import redis
-        r = redis.from_url(redis_url)
+        r = redis_lib.from_url(redis_url)
         stream_key = f"fuzzyclaw:run:{run_id}:done"
         r.xadd(stream_key, {'agent_run_id': agent_run_id, 'status': status})
         logger.info("Signaled completion on stream %s (status=%s)", stream_key, status)
@@ -65,7 +66,6 @@ def signal_completion(status: str):
 
 def parse_frontmatter(text: str) -> tuple[dict, str]:
     """Parse YAML frontmatter from markdown text."""
-    import re
     match = re.match(r'^---\s*\n(.*?)\n---\s*\n(.*)', text, re.DOTALL)
     if not match:
         raise ValueError("No frontmatter found")
@@ -90,7 +90,7 @@ def parse_agent_file(filepath: str) -> dict:
 
     tools = frontmatter.get('tools', [])
     if not isinstance(tools, list):
-        tools = []
+        raise ValueError(f"'tools' must be a list in frontmatter of {filepath}, got {type(tools).__name__}")
 
     memory = bool(frontmatter.get('memory', False))
 

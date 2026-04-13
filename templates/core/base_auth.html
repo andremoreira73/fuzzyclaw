@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="flex items-center justify-center min-h-[60vh]">
+    <div class="w-full {% block card_width %}max-w-md{% endblock card_width %}">
+        <div class="bg-white rounded-xl shadow-md p-8 border border-gray-100{% block card_extra_class %}{% endblock card_extra_class %}">
+            {% block card_content %}{% endblock card_content %}
+        </div>
+    </div>
+</div>
+{% endblock content %}

@@ -35,16 +35,16 @@ class CoordinatorGuardMiddleware(AgentMiddleware):
         # LLM returned text — check if agents are still running
         from .models import AgentRun
 
-        running = AgentRun.objects.filter(
-            run_id=self.run_id, status='running',
+        active = AgentRun.objects.filter(
+            run_id=self.run_id, status__in=('pending', 'running'),
         ).count()
 
-        if running == 0:
+        if active == 0:
             return None
 
         logger.info(
-            "Coordinator guard: %d agent(s) still running for run %d, redirecting",
-            running, self.run_id,
+            "Coordinator guard: %d agent(s) still active for run %d, redirecting",
+            active, self.run_id,
         )
         return {
             "messages": [

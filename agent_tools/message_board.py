@@ -57,9 +57,12 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
     # Use HITL timeout as max_wait — the coordinator extends this agent's
     # lifetime to match when message_board is in the tools list.
     max_wait = int(os.environ.get('FUZZYCLAW_HITL_TIMEOUT', '1800'))
+    agent_wait = int(os.environ.get('FUZZYCLAW_AGENT_TIMEOUT', '600'))
 
     # Track read position across calls within this agent's lifetime
     last_seen_id = '0-0'
+    # Minimum wait floor after posting — None means no floor active
+    _reply_wait_floor: int | None = None
 
     @tool
     def post_message(to: str, message: str) -> str:
@@ -80,6 +83,8 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
         except Exception as e:
             logger.warning("Board post failed: %s", e)
             return f"Error: message board unavailable ({e}). Retry the tool call."
+        nonlocal _reply_wait_floor
+        _reply_wait_floor = max_wait if to == 'human' else agent_wait
         logger.info("Board: %s -> %s: %s", self_id, to, message[:100])
         return f"Message posted to {to}."
 
@@ -98,7 +103,12 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                           return immediately, max 1800). Use 1800 when waiting
                           for a human reply.
         """
-        nonlocal last_seen_id
+        nonlocal last_seen_id, _reply_wait_floor
+        # Enforce minimum wait after posting — HITL timeout for humans,
+        # agent timeout for other agents. The LLM tends to pick short waits
+        # (60s) but recipients need time to process.
+        if _reply_wait_floor is not None:
+            wait_seconds = max(wait_seconds, _reply_wait_floor)
         wait_seconds = max(0, min(wait_seconds, max_wait))
 
         messages = []
@@ -141,6 +151,8 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
                 break
 
         if messages:
+            # Clear the wait floor — we got a reply
+            _reply_wait_floor = None
             logger.info("Board: %s received %d message(s)", self_id, len(messages))
             return json.dumps(messages)
         if read_error is not None:

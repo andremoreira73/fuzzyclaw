@@ -104,6 +104,10 @@ Mobile version:
 
 - user hyperview and hxml at a later point.
 
+Connectors:
+
+- allow users to connect to their favorite apps (google mail, outlook, etc.)
+
 Priority guidance (from Codex assessment): operational correctness before features — cancellation/cleanup semantics, failure/recovery paths, deployment hardening. The architecture is solid; what's missing is the "stop work safely" and "stay inside boundaries" layer.
 
 Known issues:

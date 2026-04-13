@@ -89,56 +89,29 @@ def _to_host_path(container_path: Path) -> str:
     return container_str
 
 
-def _resolve_volume_host_path(host_path: str) -> str:
-    """Resolve a volume host path from agent frontmatter.
+def _resolve_scoped_volume(vol: dict, owner_id: int, run_id: int) -> str:
+    """Resolve a scoped volume to its host path.
 
-    Paths starting with './' are resolved relative to HOST_PROJECT_DIR.
-    Uses realpath to resolve symlinks before security validation.
+    scope: "user" → {DATA_DIR}/users/{owner_id}/
+    scope: "run"  → {DATA_DIR}/runs/run_{run_id}/
+
+    Creates the directory if it doesn't exist. Returns the host-side path
+    (translated from the container-internal path via _to_host_path).
     """
-    if host_path.startswith('./') or host_path.startswith('../'):
-        host_root = getattr(settings, 'FUZZYCLAW_HOST_PROJECT_DIR', str(settings.BASE_DIR))
-        return os.path.realpath(os.path.join(host_root, host_path))
-    return os.path.realpath(host_path)
+    scope = vol['scope']
+    data_dir = Path(settings.FUZZYCLAW_DATA_DIR)
 
+    if scope == 'user':
+        container_path = data_dir / 'users' / str(owner_id)
+    elif scope == 'run':
+        container_path = data_dir / 'runs' / f'run_{run_id}'
+    else:
+        raise RuntimeError(f"Unknown volume scope: '{scope}'")
 
-def _validate_volume_mount(vol: dict) -> None:
-    """Validate a single volume mount against security allowlist/blocklist.
+    container_path.mkdir(parents=True, exist_ok=True)
+    os.chmod(container_path, 0o775)
 
-    Raises RuntimeError if the mount is not permitted.
-    """
-    host_path = _resolve_volume_host_path(vol['host'])
-
-    # Check blocklist (startswith match, but '/' only blocks root exactly)
-    # Resolve blocklist entries too so symlinks match on both sides
-    blocklist = getattr(settings, 'FUZZYCLAW_VOLUME_BLOCKLIST', [])
-    for blocked in blocklist:
-        blocked_normalized = os.path.realpath(blocked).rstrip('/')
-        if blocked_normalized == '':
-            # '/' entry — only block mounting root itself
-            if host_path == '/':
-                raise RuntimeError(
-                    f"Volume mount blocked: '{host_path}' matches blocklist entry '{blocked}'."
-                )
-        elif host_path == blocked_normalized or host_path.startswith(blocked_normalized + '/'):
-            raise RuntimeError(
-                f"Volume mount blocked: '{host_path}' matches blocklist entry '{blocked}'."
-            )
-
-    # Check allowlist — empty means everything allowed (minus blocklist),
-    # non-empty means only those paths (minus blocklist).
-    # Resolve allowlist entries too
-    allowlist = getattr(settings, 'FUZZYCLAW_VOLUME_ALLOWLIST', [])
-    if allowlist:
-        allowed = False
-        for allow_path in allowlist:
-            allow_normalized = os.path.realpath(allow_path).rstrip('/')
-            if host_path == allow_normalized or host_path.startswith(allow_normalized + '/'):
-                allowed = True
-                break
-        if not allowed:
-            raise RuntimeError(
-                f"Volume mount denied: '{host_path}' is not under any allowlisted path."
-            )
+    return _to_host_path(container_path)
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +402,36 @@ def _release_container_slot(agent_run_id: int) -> None:
         logger.warning("Failed to release container slot %s: %s", agent_run_id, e)
 
 
+def _get_compose_network(client: docker.DockerClient) -> str:
+    """Resolve the Docker Compose network by inspecting the current container.
+
+    When Compose recreates the stack, the network gets a new ID but keeps the
+    same name.  Using the name alone can race with stale networks.  Instead,
+    find which network *this* container (web/celery) is on and return its ID
+    so agent containers always join the exact same network.
+
+    Falls back to the configured name if detection fails (e.g. running outside
+    Docker).
+    """
+    fallback = getattr(settings, 'FUZZYCLAW_DOCKER_NETWORK', 'fuzzyclaw_default')
+    try:
+        hostname = os.environ.get('HOSTNAME', '')
+        if not hostname:
+            return fallback
+        this_container = client.containers.get(hostname)
+        networks = this_container.attrs.get('NetworkSettings', {}).get('Networks', {})
+        for net_name, net_info in networks.items():
+            if 'fuzzyclaw' in net_name:
+                network_id = net_info.get('NetworkID', '')
+                if network_id:
+                    logger.debug("Resolved Compose network: %s (%s)", net_name, network_id[:12])
+                    return network_id
+        return fallback
+    except Exception as e:
+        logger.debug("Could not detect Compose network (%s), using fallback: %s", e, fallback)
+        return fallback
+
+
 def _get_redis_client():
     """Get a Redis client for streams (db=1). Returns None if unavailable."""
     redis_url = getattr(settings, 'FUZZYCLAW_REDIS_URL', '')
@@ -540,6 +543,19 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         max_input = model_cfg.get('max_input_tokens', 80_000)
         env['SCRAPE_MAX_TOKENS'] = str(int(max_input * 0.8))
 
+    # Resolve owner — needed for memory namespace and user-scoped volumes
+    from .models import AgentRun
+    owner_id = None
+    try:
+        agent_run = AgentRun.objects.select_related('run__briefing__owner').get(pk=agent_run_id)
+        owner_id = agent_run.run.briefing.owner_id
+        env['OWNER_ID'] = str(owner_id)
+    except AgentRun.DoesNotExist:
+        logger.warning(
+            "AgentRun %d not found while resolving OWNER_ID — memory and user volumes unavailable",
+            agent_run_id,
+        )
+
     # Optional persistent memory
     has_memory = agent_def.get('memory', False)
     if isinstance(has_memory, str):
@@ -549,17 +565,6 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         database_url = os.environ.get('DATABASE_URL', '')
         if database_url:
             env['DATABASE_URL'] = database_url
-        # Memory namespace owner — scopes (owner_id, agent_name) so one user's
-        # memories never leak into another's.
-        from .models import AgentRun
-        try:
-            agent_run = AgentRun.objects.select_related('run__briefing__owner').get(pk=agent_run_id)
-            env['OWNER_ID'] = str(agent_run.run.briefing.owner_id)
-        except AgentRun.DoesNotExist:
-            logger.warning(
-                "AgentRun %d not found while resolving OWNER_ID — memory namespace will fall back",
-                agent_run_id,
-            )
 
     # Volumes — must use HOST paths since Docker daemon runs on the host
     host_skills = _to_host_path(settings.FUZZYCLAW_SKILLS_DIR)
@@ -569,14 +574,15 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
         host_comms: {'bind': '/app/comms', 'mode': 'rw'},
     }
 
-    # Custom volume mounts from agent frontmatter
+    # Scoped volume mounts from agent frontmatter
     custom_volumes = agent_def.get('volumes', [])
-    agent_volumes_info = []  # For AGENT_VOLUMES env var
+    agent_volumes_info = []
     if custom_volumes:
-        # Structural validation was done at parse time; security check here
         for vol in custom_volumes:
-            _validate_volume_mount(vol)
-            resolved_host = _resolve_volume_host_path(vol['host'])
+            if not owner_id:
+                logger.warning("Skipping volume mount — owner_id unavailable")
+                continue
+            resolved_host = _resolve_scoped_volume(vol, owner_id, run_id)
             mount_path = vol['mount']
             mode = vol['mode']
             volumes[resolved_host] = {'bind': mount_path, 'mode': mode}
@@ -594,7 +600,7 @@ def _start_agent_container_inner(agent_name, task_description, agent_run_id, run
     # Resource limits
     mem_limit = getattr(settings, 'FUZZYCLAW_AGENT_MEM_LIMIT', '512m')
     cpu_limit = getattr(settings, 'FUZZYCLAW_AGENT_CPU_LIMIT', 0.5)
-    network = getattr(settings, 'FUZZYCLAW_DOCKER_NETWORK', 'fuzzyclaw_default')
+    network = _get_compose_network(client)
 
     logger.info(
         "Starting container %s (image: %s) for agent_run %d",
@@ -738,6 +744,15 @@ def cleanup_run(run_id: int) -> dict:
                 result['comms_removed'] += 1
             except Exception as e:
                 logger.warning("Failed to cleanup comms dir %s: %s", comms_dir, e)
+
+    # Clean up run-scoped data directory
+    run_data_dir = Path(settings.FUZZYCLAW_DATA_DIR) / 'runs' / f'run_{run_id}'
+    if run_data_dir.is_dir():
+        try:
+            shutil.rmtree(run_data_dir)
+            result['run_data_removed'] = True
+        except Exception as e:
+            logger.warning("Failed to remove run data dir %s: %s", run_data_dir, e)
 
     # Delete Redis streams (completion + board)
     try:

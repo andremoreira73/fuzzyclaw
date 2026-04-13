@@ -1,0 +1,57 @@
+{% comment %}
+Per-item action buttons for the file manager.
+Context: item_path (full relative path), item (dict with name, is_dir), all_folders (list).
+{% endcomment %}
+<div class="flex items-center justify-end space-x-1">
+  {# Move #}
+  <div x-data="{ showMove: false }" class="relative">
+    <button @click="showMove = !showMove" class="text-gray-400 hover:text-indigo-600 transition-colors p-1" title="Move">
+      <i class="fas fa-arrows-alt text-xs"></i>
+    </button>
+    <div x-show="showMove" x-cloak @click.outside="showMove = false"
+         class="absolute right-0 bottom-full mb-1 z-10 bg-white border border-gray-200 rounded-lg shadow-lg p-2 w-48">
+      <form method="post" action="{% url 'core:file_move' %}">
+        {% csrf_token %}
+        <input type="hidden" name="path" value="{{ item_path }}">
+        <select name="destination"
+                class="w-full px-2 py-1 text-xs border border-gray-300 rounded mb-2 focus:ring-1 focus:ring-indigo-500">
+          {% for folder in all_folders %}
+          <option value="{{ folder }}">{% if folder %}/{{ folder }}{% else %}/ (root){% endif %}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" class="w-full px-2 py-1 text-xs bg-indigo-600 text-white rounded hover:bg-indigo-700">
+          Move here
+        </button>
+      </form>
+    </div>
+  </div>
+
+  {# Download (files only) #}
+  {% if not item.is_dir %}
+  <a href="{% url 'core:file_download' %}?path={{ item_path }}"
+     class="text-gray-400 hover:text-indigo-600 transition-colors p-1" title="Download">
+    <i class="fas fa-download text-xs"></i>
+  </a>
+  {% endif %}
+
+  {# Delete #}
+  {% if item.is_dir %}
+  <form method="post" action="{% url 'core:folder_delete' %}" class="inline"
+        onsubmit="return confirm('Delete folder &quot;{{ item.name }}&quot; and all its contents?')">
+    {% csrf_token %}
+    <input type="hidden" name="path" value="{{ item_path }}">
+    <button type="submit" class="text-gray-400 hover:text-red-600 transition-colors p-1" title="Delete">
+      <i class="fas fa-trash-alt text-xs"></i>
+    </button>
+  </form>
+  {% else %}
+  <form method="post" action="{% url 'core:file_delete' %}" class="inline"
+        onsubmit="return confirm('Delete &quot;{{ item.name }}&quot;?')">
+    {% csrf_token %}
+    <input type="hidden" name="path" value="{{ item_path }}">
+    <button type="submit" class="text-gray-400 hover:text-red-600 transition-colors p-1" title="Delete">
+      <i class="fas fa-trash-alt text-xs"></i>
+    </button>
+  </form>
+  {% endif %}
+</div>

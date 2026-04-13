@@ -5,8 +5,8 @@ model: gpt-5.4
 tools: ["web_search", "web_scrape", "bash"]
 memory: true
 volumes:
-  - host: "./in_and_out/market_research"
-    mount: "/data/market_research"
+  - scope: "user"
+    mount: "/app/data"
     mode: "rw"
 ---
 

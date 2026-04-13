@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Files — FuzzyClaw{% endblock title %}
+
+{% block content %}
+<div class="mb-6">
+  <h1 class="text-2xl font-bold text-gray-900">Files</h1>
+  <p class="text-gray-500 mt-1">Your personal file storage — accessible by your agents</p>
+</div>
+
+<!-- File list + actions (HTMX target for partial updates) -->
+<div id="file-list">
+  {% include "core/partials/file_list.html" %}
+</div>
+{% endblock content %}

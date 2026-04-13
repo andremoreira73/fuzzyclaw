@@ -24,6 +24,10 @@ db.sqlite3-journal
 # Tailwind build output (rebuilt from static/css/input.css)
 static/css/tailwind.css
 
+# User data (created at runtime, per-user isolation)
+data/users/
+data/runs/
+
 # Environment
 .env
 .env.local

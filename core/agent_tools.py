@@ -404,6 +404,18 @@ def make_submit_coordinator_report(run):
         Args:
             report: The final synthesis report text.
         """
+        from .models import AgentRun
+
+        active = AgentRun.objects.filter(
+            run_id=run.id, status__in=('pending', 'running'),
+        ).count()
+
+        if active > 0:
+            return (
+                f"Cannot submit report: {active} agent(s) still active. "
+                "Use check_reports to wait for them before finishing."
+            )
+
         run.refresh_from_db()
         run.coordinator_report = report
         run.status = 'completed'

@@ -31,6 +31,17 @@ urlpatterns = [
     path('agents/', views.agent_list, name='agent_list'),
     path('skills/', views.skill_list, name='skill_list'),
 
+    # File Manager
+    path('files/', views.file_manager, name='file_manager'),
+    path('files/list/', views.file_list_partial, name='file_list_partial'),
+    path('files/upload/', views.file_upload, name='file_upload'),
+    path('files/download/', views.file_download, name='file_download'),
+    path('files/delete/', views.file_delete, name='file_delete'),
+    path('files/rename/', views.file_rename, name='file_rename'),
+    path('files/move/', views.file_move, name='file_move'),
+    path('files/folder/create/', views.folder_create, name='folder_create'),
+    path('files/folder/delete/', views.folder_delete, name='folder_delete'),
+
     # Message Board
     path('board/badge/', views.board_badge, name='board_badge'),
     path('board/active-runs/', views.board_active_runs, name='board_active_runs'),

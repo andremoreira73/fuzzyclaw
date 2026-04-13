@@ -84,7 +84,11 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
             logger.warning("Board post failed: %s", e)
             return f"Error: message board unavailable ({e}). Retry the tool call."
         nonlocal _reply_wait_floor
-        _reply_wait_floor = max_wait if to == 'human' else agent_wait
+        # Only arm the wait floor if there isn't one active already.
+        # This prevents re-arming when the agent sends a follow-up message
+        # (e.g. relaying an answer) after already receiving a reply.
+        if _reply_wait_floor is None:
+            _reply_wait_floor = max_wait if to == 'human' else agent_wait
         logger.info("Board: %s -> %s: %s", self_id, to, message[:100])
         return f"Message posted to {to}."
 

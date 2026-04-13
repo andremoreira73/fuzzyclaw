@@ -91,11 +91,11 @@ class RegistryTests(TestCase):
                 'tools: ["bash"]\n'
                 'memory: true\n'
                 'volumes:\n'
-                '  - host: "./data/output"\n'
+                '  - scope: "user"\n'
                 '    mount: "/data/output"\n'
                 '    mode: "rw"\n'
-                '  - host: "./data/input"\n'
-                '    mount: "/data/input"\n'
+                '  - scope: "run"\n'
+                '    mount: "/data/shared"\n'
                 '    mode: "ro"\n'
                 '---\n\n'
                 'Agent with volumes.\n'
@@ -106,10 +106,10 @@ class RegistryTests(TestCase):
             self.assertTrue(data['memory'])
             self.assertEqual(len(data['volumes']), 2)
             self.assertEqual(data['volumes'][0], {
-                'host': './data/output', 'mount': '/data/output', 'mode': 'rw',
+                'scope': 'user', 'mount': '/data/output', 'mode': 'rw',
             })
             self.assertEqual(data['volumes'][1], {
-                'host': './data/input', 'mount': '/data/input', 'mode': 'ro',
+                'scope': 'run', 'mount': '/data/shared', 'mode': 'ro',
             })
 
     def test_parse_agent_md_defaults(self):
@@ -987,7 +987,7 @@ class StartAgentContainerTests(TestCase):
                     'name': 'test-agent',
                     'model_choice': 'gpt-5-mini',
                     'tools': [],
-                    'volumes': [{'host': '/etc/shadow', 'mount': '/data', 'mode': 'ro'}],
+                    'volumes': [{'scope': 'invalid', 'mount': '/data', 'mode': 'ro'}],
                 }
                 with self.assertRaises(RuntimeError):
                     start_agent_container('test-agent', 'vol fail', self.agent_run.id, self.run.id)
@@ -1132,66 +1132,72 @@ class VolumeParsingTests(TestCase):
 
 
 class VolumeValidationTests(TestCase):
-    """Tests for validate_volumes structural checks."""
+    """Tests for validate_volumes structural checks (scope-based)."""
 
-    def test_valid_volume(self):
+    def test_valid_user_scope(self):
         errors = validate_volumes([
-            {'host': '/home/user/proj', 'mount': '/workspace', 'mode': 'ro'},
+            {'scope': 'user', 'mount': '/data', 'mode': 'rw'},
         ])
         self.assertEqual(errors, [])
 
-    def test_valid_rw_volume(self):
+    def test_valid_run_scope(self):
         errors = validate_volumes([
-            {'host': '/data/output', 'mount': '/output', 'mode': 'rw'},
+            {'scope': 'run', 'mount': '/data/shared', 'mode': 'ro'},
         ])
         self.assertEqual(errors, [])
+
+    def test_invalid_scope(self):
+        errors = validate_volumes([
+            {'scope': 'global', 'mount': '/data', 'mode': 'rw'},
+        ])
+        self.assertTrue(any("must be one of" in e for e in errors))
+
+    def test_missing_scope(self):
+        errors = validate_volumes([
+            {'mount': '/workspace', 'mode': 'ro'},
+        ])
+        self.assertTrue(any("'scope'" in e for e in errors))
 
     def test_invalid_mode(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': '/workspace', 'mode': 'rwx'},
+            {'scope': 'user', 'mount': '/workspace', 'mode': 'rwx'},
         ])
         self.assertEqual(len(errors), 1)
         self.assertIn("'mode' must be 'ro' or 'rw'", errors[0])
 
-    def test_missing_host(self):
-        errors = validate_volumes([
-            {'mount': '/workspace', 'mode': 'ro'},
-        ])
-        self.assertTrue(any("'host'" in e for e in errors))
-
     def test_missing_mount(self):
         errors = validate_volumes([
-            {'host': '/data', 'mode': 'ro'},
+            {'scope': 'user', 'mode': 'ro'},
         ])
         self.assertTrue(any("'mount'" in e for e in errors))
 
     def test_relative_mount_rejected(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': 'workspace', 'mode': 'ro'},
+            {'scope': 'user', 'mount': 'workspace', 'mode': 'ro'},
         ])
         self.assertTrue(any("absolute path" in e for e in errors))
 
     def test_reserved_mount_app(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': '/app', 'mode': 'ro'},
+            {'scope': 'user', 'mount': '/app', 'mode': 'ro'},
         ])
         self.assertTrue(any("conflicts with reserved" in e for e in errors))
 
     def test_reserved_mount_skills(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': '/app/skills', 'mode': 'ro'},
+            {'scope': 'user', 'mount': '/app/skills', 'mode': 'ro'},
         ])
         self.assertTrue(any("conflicts with reserved" in e for e in errors))
 
     def test_reserved_mount_comms(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': '/app/comms', 'mode': 'ro'},
+            {'scope': 'user', 'mount': '/app/comms', 'mode': 'ro'},
         ])
         self.assertTrue(any("conflicts with reserved" in e for e in errors))
 
     def test_reserved_mount_subpath(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': '/app/skills/mything', 'mode': 'ro'},
+            {'scope': 'user', 'mount': '/app/skills/mything', 'mode': 'ro'},
         ])
         self.assertTrue(any("conflicts with reserved" in e for e in errors))
 
@@ -1201,7 +1207,7 @@ class VolumeValidationTests(TestCase):
 
     def test_not_a_list(self):
         errors = validate_volumes("bad")
-        self.assertTrue(any("must be a JSON list" in e for e in errors))
+        self.assertTrue(any("must be a list" in e for e in errors))
 
     def test_empty_volumes_valid(self):
         errors = validate_volumes([])
@@ -1209,136 +1215,59 @@ class VolumeValidationTests(TestCase):
 
     def test_multiple_errors_reported(self):
         errors = validate_volumes([
-            {'host': '/data', 'mount': 'relative', 'mode': 'bad'},
+            {'scope': 'user', 'mount': 'relative', 'mode': 'bad'},
         ])
         self.assertGreaterEqual(len(errors), 2)
 
 
-class VolumeSecurityTests(TestCase):
-    """Tests for volume mount security validation at launch time."""
+class ScopedVolumeTests(TestCase):
+    """Tests for scoped volume resolution."""
 
-    def test_blocklist_rejects_root(self):
-        from .containers import _validate_volume_mount
-        with self.assertRaises(RuntimeError) as ctx:
-            _validate_volume_mount({'host': '/', 'mount': '/workspace', 'mode': 'ro'})
-        self.assertIn('blocklist', str(ctx.exception))
-
-    def test_blocklist_rejects_etc(self):
-        from .containers import _validate_volume_mount
-        with self.assertRaises(RuntimeError) as ctx:
-            _validate_volume_mount({'host': '/etc', 'mount': '/workspace', 'mode': 'ro'})
-        self.assertIn('blocklist', str(ctx.exception))
-
-    def test_blocklist_rejects_etc_subpath(self):
-        from .containers import _validate_volume_mount
-        with self.assertRaises(RuntimeError) as ctx:
-            _validate_volume_mount({'host': '/etc/passwd', 'mount': '/workspace', 'mode': 'ro'})
-        self.assertIn('blocklist', str(ctx.exception))
-
-    def test_blocklist_rejects_docker_socket(self):
-        from .containers import _validate_volume_mount
-        with self.assertRaises(RuntimeError) as ctx:
-            _validate_volume_mount({'host': '/var/run/docker.sock', 'mount': '/workspace', 'mode': 'ro'})
-        self.assertIn('blocklist', str(ctx.exception))
-
-    def test_empty_allowlist_allows_all(self):
-        from .containers import _validate_volume_mount
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=[],
-            FUZZYCLAW_VOLUME_BLOCKLIST=[],
-        ):
-            # Empty allowlist = everything allowed (minus blocklist)
-            _validate_volume_mount({'host': '/home/user/safe', 'mount': '/workspace', 'mode': 'ro'})
-
-    def test_allowlist_permits_allowed_path(self):
-        from .containers import _validate_volume_mount
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=['/home/user/projects'],
-            FUZZYCLAW_VOLUME_BLOCKLIST=[],
-        ):
-            # Should not raise
-            _validate_volume_mount({'host': '/home/user/projects/myapp', 'mount': '/workspace', 'mode': 'ro'})
-
-    def test_allowlist_permits_exact_match(self):
-        from .containers import _validate_volume_mount
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=['/home/user/projects'],
-            FUZZYCLAW_VOLUME_BLOCKLIST=[],
-        ):
-            _validate_volume_mount({'host': '/home/user/projects', 'mount': '/workspace', 'mode': 'ro'})
-
-    def test_allowlist_rejects_outside_path(self):
-        from .containers import _validate_volume_mount
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=['/home/user/projects'],
-            FUZZYCLAW_VOLUME_BLOCKLIST=[],
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                _validate_volume_mount({'host': '/home/user/secrets', 'mount': '/workspace', 'mode': 'ro'})
-            self.assertIn('not under any allowlisted', str(ctx.exception))
-
-    def test_blocklist_takes_precedence(self):
-        from .containers import _validate_volume_mount
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=['/'],
-            FUZZYCLAW_VOLUME_BLOCKLIST=['/', '/etc'],
-        ):
-            with self.assertRaises(RuntimeError) as ctx:
-                _validate_volume_mount({'host': '/etc/shadow', 'mount': '/workspace', 'mode': 'ro'})
-            self.assertIn('blocklist', str(ctx.exception))
-
-    def test_resolve_relative_path(self):
-        from .containers import _resolve_volume_host_path
-        with self.settings(FUZZYCLAW_HOST_PROJECT_DIR='/home/user/fuzzyclaw'):
-            resolved = _resolve_volume_host_path('./')
-            self.assertEqual(resolved, '/home/user/fuzzyclaw')
-
-    def test_resolve_relative_subpath(self):
-        from .containers import _resolve_volume_host_path
-        with self.settings(FUZZYCLAW_HOST_PROJECT_DIR='/home/user/fuzzyclaw'):
-            resolved = _resolve_volume_host_path('./data/output')
-            self.assertEqual(resolved, '/home/user/fuzzyclaw/data/output')
-
-    def test_resolve_absolute_path_unchanged(self):
-        from .containers import _resolve_volume_host_path
-        resolved = _resolve_volume_host_path('/home/user/other')
-        self.assertEqual(resolved, '/home/user/other')
-
-    def test_symlink_to_blocked_path_rejected(self):
-        """Symlink that resolves to a blocked path must be caught."""
-        from .containers import _resolve_volume_host_path, _validate_volume_mount
-
+    def test_user_scope_resolves_to_user_dir(self):
+        from .containers import _resolve_scoped_volume
         with tempfile.TemporaryDirectory() as tmpdir:
-            link_path = Path(tmpdir) / 'sneaky_link'
-            link_path.symlink_to('/etc')
+            with self.settings(FUZZYCLAW_DATA_DIR=tmpdir, FUZZYCLAW_HOST_PROJECT_DIR=tmpdir):
+                host_path = _resolve_scoped_volume(
+                    {'scope': 'user', 'mount': '/data', 'mode': 'rw'}, owner_id=42, run_id=1,
+                )
+                self.assertIn('users/42', host_path)
 
-            with self.settings(
-                FUZZYCLAW_HOST_PROJECT_DIR=tmpdir,
-                FUZZYCLAW_VOLUME_ALLOWLIST=[tmpdir],
-                FUZZYCLAW_VOLUME_BLOCKLIST=['/etc'],
-            ):
-                resolved = _resolve_volume_host_path(str(link_path))
-                self.assertEqual(resolved, '/etc')
+    def test_run_scope_resolves_to_run_dir(self):
+        from .containers import _resolve_scoped_volume
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(FUZZYCLAW_DATA_DIR=tmpdir, FUZZYCLAW_HOST_PROJECT_DIR=tmpdir):
+                host_path = _resolve_scoped_volume(
+                    {'scope': 'run', 'mount': '/data/shared', 'mode': 'rw'}, owner_id=42, run_id=7,
+                )
+                self.assertIn('runs/run_7', host_path)
 
+    def test_user_scope_creates_directory(self):
+        from .containers import _resolve_scoped_volume
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(FUZZYCLAW_DATA_DIR=tmpdir, FUZZYCLAW_HOST_PROJECT_DIR=tmpdir):
+                _resolve_scoped_volume(
+                    {'scope': 'user', 'mount': '/data', 'mode': 'rw'}, owner_id=99, run_id=1,
+                )
+                self.assertTrue(Path(tmpdir, 'users', '99').is_dir())
+
+    def test_different_users_get_different_dirs(self):
+        from .containers import _resolve_scoped_volume
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(FUZZYCLAW_DATA_DIR=tmpdir, FUZZYCLAW_HOST_PROJECT_DIR=tmpdir):
+                vol = {'scope': 'user', 'mount': '/data', 'mode': 'rw'}
+                path_a = _resolve_scoped_volume(vol, owner_id=1, run_id=1)
+                path_b = _resolve_scoped_volume(vol, owner_id=2, run_id=1)
+                self.assertNotEqual(path_a, path_b)
+
+    def test_invalid_scope_raises(self):
+        from .containers import _resolve_scoped_volume
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with self.settings(FUZZYCLAW_DATA_DIR=tmpdir):
                 with self.assertRaises(RuntimeError) as ctx:
-                    _validate_volume_mount({'host': str(link_path), 'mount': '/data', 'mode': 'ro'})
-                self.assertIn('blocklist', str(ctx.exception))
-
-    def test_relative_symlink_to_blocked_path_rejected(self):
-        """Relative symlink traversal into a blocked path must be caught."""
-        from .containers import _validate_volume_mount
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            link_path = Path(tmpdir) / 'etc_link'
-            link_path.symlink_to('/etc')
-
-            with self.settings(
-                FUZZYCLAW_HOST_PROJECT_DIR=tmpdir,
-                FUZZYCLAW_VOLUME_ALLOWLIST=[tmpdir],
-                FUZZYCLAW_VOLUME_BLOCKLIST=['/etc'],
-            ):
-                with self.assertRaises(RuntimeError):
-                    _validate_volume_mount({'host': f'{tmpdir}/etc_link', 'mount': '/data', 'mode': 'ro'})
+                    _resolve_scoped_volume(
+                        {'scope': 'global', 'mount': '/data', 'mode': 'rw'}, owner_id=1, run_id=1,
+                    )
+                self.assertIn('Unknown volume scope', str(ctx.exception))
 
 
 class VolumeLaunchTests(TestCase):
@@ -1369,7 +1298,7 @@ class VolumeLaunchTests(TestCase):
             'description: Agent with volumes\n'
             'model: gpt-5-mini\n'
             'tools: ["bash"]\n'
-            'volumes: [{"host": "/home/user/projects/myapp", "mount": "/workspace", "mode": "ro"}]\n'
+            'volumes: [{"scope": "user", "mount": "/workspace", "mode": "ro"}]\n'
             '---\n\n'
             'Agent with volumes.\n'
         )
@@ -1403,55 +1332,53 @@ class VolumeLaunchTests(TestCase):
         mock_container.id = 'vol123'
         mock_client.containers.run.return_value = mock_container
 
-        with self.settings(
-            FUZZYCLAW_VOLUME_ALLOWLIST=['/home/user/projects'],
-            FUZZYCLAW_VOLUME_BLOCKLIST=[],
-        ):
-            container_id = start_agent_container(
-                'vol-agent', 'test volumes', self.agent_run.id, self.run.id,
-            )
+        with tempfile.TemporaryDirectory() as data_dir:
+            with self.settings(FUZZYCLAW_DATA_DIR=data_dir):
+                container_id = start_agent_container(
+                    'vol-agent', 'test volumes', self.agent_run.id, self.run.id,
+                )
 
-        self.assertEqual(container_id, 'vol123')
+            self.assertEqual(container_id, 'vol123')
 
-        # Verify custom volume was passed to Docker
-        call_kwargs = mock_client.containers.run.call_args
-        volumes_arg = call_kwargs.kwargs.get('volumes') or call_kwargs[1].get('volumes')
-        self.assertIn('/home/user/projects/myapp', volumes_arg)
-        self.assertEqual(volumes_arg['/home/user/projects/myapp'], {'bind': '/workspace', 'mode': 'ro'})
+            # Verify custom volume was passed to Docker
+            call_kwargs = mock_client.containers.run.call_args
+            volumes_arg = call_kwargs.kwargs.get('volumes') or call_kwargs[1].get('volumes')
+            # Should contain a path with users/{user_id}
+            user_vol = [k for k in volumes_arg if f'users/{self.user.id}' in k]
+            self.assertEqual(len(user_vol), 1)
+            self.assertEqual(volumes_arg[user_vol[0]], {'bind': '/workspace', 'mode': 'ro'})
 
-        # Verify AGENT_VOLUMES env var was set
-        env_arg = call_kwargs.kwargs.get('environment') or call_kwargs[1].get('environment')
-        self.assertIn('AGENT_VOLUMES', env_arg)
-        vol_info = json_mod.loads(env_arg['AGENT_VOLUMES'])
-        self.assertEqual(vol_info[0]['mount'], '/workspace')
-        self.assertEqual(vol_info[0]['mode'], 'ro')
+            # Verify AGENT_VOLUMES env var was set
+            env_arg = call_kwargs.kwargs.get('environment') or call_kwargs[1].get('environment')
+            self.assertIn('AGENT_VOLUMES', env_arg)
+            vol_info = json_mod.loads(env_arg['AGENT_VOLUMES'])
+            self.assertEqual(vol_info[0]['mount'], '/workspace')
+            self.assertEqual(vol_info[0]['mode'], 'ro')
 
     @patch('core.containers.get_docker_client')
-    def test_start_with_blocked_volume_raises(self, mock_get_client):
+    @patch('core.containers.get_agent')
+    def test_start_with_invalid_scope_raises(self, mock_get_agent, mock_get_client):
         from .containers import start_agent_container
 
         mock_client = MagicMock()
         mock_get_client.return_value = mock_client
         mock_client.containers.list.return_value = []
 
-        # Rewrite agent to mount /etc
-        (self._agents_dir / 'vol-agent.md').write_text(
-            '---\n'
-            'name: vol-agent\n'
-            'description: Agent with blocked volume\n'
-            'model: gpt-5-mini\n'
-            'tools: ["bash"]\n'
-            'volumes: [{"host": "/etc", "mount": "/workspace", "mode": "ro"}]\n'
-            '---\n\n'
-            'Agent with blocked volumes.\n'
-        )
-        clear_cache()
+        # Bypass registry validation — inject invalid scope directly
+        mock_get_agent.return_value = {
+            'name': 'vol-agent',
+            'model_choice': 'gpt-5-mini',
+            'tools': ['bash'],
+            'memory': False,
+            'volumes': [{'scope': 'global', 'mount': '/workspace', 'mode': 'ro'}],
+            'prompt': 'test',
+        }
 
         with self.assertRaises(RuntimeError) as ctx:
             start_agent_container(
-                'vol-agent', 'test blocked', self.agent_run.id, self.run.id,
+                'vol-agent', 'test invalid scope', self.agent_run.id, self.run.id,
             )
-        self.assertIn('blocklist', str(ctx.exception))
+        self.assertIn('Unknown volume scope', str(ctx.exception))
 
 
 class ReadAgentReportTests(TestCase):

@@ -185,6 +185,12 @@ FUZZYCLAW_TOOL_NAMES = sorted(FUZZYCLAW_TOOLS.keys())
 FUZZYCLAW_AGENTS_DIR = BASE_DIR / 'agents'
 FUZZYCLAW_SKILLS_DIR = BASE_DIR / 'skills'
 
+# User data directory — per-user files and run-scoped shared dirs
+# data/users/{user_id}/ — private per-user storage, mounted into agents via scope: "user"
+# data/runs/run_{run_id}/ — shared between agents in a run, cleaned up after
+FUZZYCLAW_DATA_DIR = Path(os.environ.get('FUZZYCLAW_DATA_DIR', str(BASE_DIR / 'data')))
+FUZZYCLAW_FILE_UPLOAD_MAX_SIZE = int(os.environ.get('FUZZYCLAW_FILE_UPLOAD_MAX_SIZE', 50 * 1024 * 1024))  # 50MB
+
 # Container Orchestration
 FUZZYCLAW_AGENT_IMAGE_PREFIX = 'fuzzyclaw-agent'
 

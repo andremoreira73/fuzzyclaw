@@ -1,0 +1,169 @@
+<!-- Actions bar -->
+<div class="flex items-center justify-between mb-4">
+  <!-- Upload -->
+  <form method="post" action="{% url 'core:file_upload' %}" enctype="multipart/form-data"
+        class="flex items-center space-x-2">
+    {% csrf_token %}
+    <input type="hidden" name="path" value="{{ subpath }}">
+    <label class="cursor-pointer px-4 py-2 bg-indigo-600 text-white text-sm font-medium rounded-lg hover:bg-indigo-700 transition-colors">
+      <i class="fas fa-upload mr-1"></i> Upload Files
+      <input type="file" name="files" multiple class="hidden"
+             onchange="this.closest('form').submit()">
+    </label>
+  </form>
+
+  <!-- New Folder -->
+  <form method="post" action="{% url 'core:folder_create' %}"
+        class="flex items-center space-x-2">
+    {% csrf_token %}
+    <input type="hidden" name="path" value="{{ subpath }}">
+    <input type="text" name="name" placeholder="New folder name"
+           required pattern="[^/.][\w\s\-.]+"
+           class="px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500">
+    <button type="submit"
+            class="px-4 py-2 bg-gray-100 text-gray-700 text-sm font-medium rounded-lg hover:bg-gray-200 transition-colors">
+      <i class="fas fa-folder-plus mr-1"></i> Create
+    </button>
+  </form>
+</div>
+
+<!-- Breadcrumb path -->
+<div class="flex items-center space-x-1 text-sm text-gray-500 mb-4">
+  <a href="{% url 'core:file_manager' %}"
+     class="hover:text-indigo-600 font-medium"
+     hx-get="{% url 'core:file_list_partial' %}"
+     hx-target="#file-list"
+     hx-push-url="{% url 'core:file_manager' %}">
+    <i class="fas fa-home"></i>
+  </a>
+  {% for part in breadcrumb_parts %}
+  <span class="text-gray-300">/</span>
+  <a href="{% url 'core:file_manager' %}?path={{ part.path }}"
+     class="hover:text-indigo-600"
+     hx-get="{% url 'core:file_list_partial' %}?path={{ part.path }}"
+     hx-target="#file-list"
+     hx-push-url="{% url 'core:file_manager' %}?path={{ part.path }}">
+    {{ part.name }}
+  </a>
+  {% endfor %}
+</div>
+
+{% if items %}
+<div class="bg-white rounded-xl shadow-sm border">
+  <table class="w-full text-sm">
+    <thead class="bg-gray-50 border-b">
+      <tr>
+        <th class="text-left px-4 py-3 font-medium text-gray-600">Name</th>
+        <th class="text-right px-4 py-3 font-medium text-gray-600 w-28">Size</th>
+        <th class="text-right px-4 py-3 font-medium text-gray-600 w-40">Modified</th>
+        <th class="text-right px-4 py-3 font-medium text-gray-600 w-24">Actions</th>
+      </tr>
+    </thead>
+    <tbody class="divide-y divide-gray-100">
+      {% for item in items %}
+      <tr class="hover:bg-gray-50 transition-colors">
+        <td class="px-4 py-3" x-data="{ editing: false }">
+          {% if subpath %}{% with item_path=subpath|add:"/"|add:item.name %}
+
+          {# Display mode #}
+          <div x-show="!editing">
+            {% if item.is_dir %}
+            <a href="{% url 'core:file_manager' %}?path={{ item_path }}"
+               hx-get="{% url 'core:file_list_partial' %}?path={{ item_path }}"
+               hx-target="#file-list"
+               hx-push-url="{% url 'core:file_manager' %}?path={{ item_path }}"
+               class="text-indigo-600 hover:text-indigo-800 font-medium">
+              <i class="fas fa-folder text-yellow-500 mr-2"></i>{{ item.name }}
+            </a>
+            {% else %}
+            <span class="text-gray-900">
+              <i class="fas fa-file text-gray-400 mr-2"></i>{{ item.name }}
+            </span>
+            {% endif %}
+            <button @click.stop="editing = true" class="ml-2 text-gray-300 hover:text-gray-500 text-xs" title="Rename">
+              <i class="fas fa-pen"></i>
+            </button>
+          </div>
+
+          {# Edit mode #}
+          <form x-show="editing" x-cloak method="post" action="{% url 'core:file_rename' %}" class="flex items-center space-x-1">
+            {% csrf_token %}
+            <input type="hidden" name="path" value="{{ item_path }}">
+            {% if item.is_dir %}<i class="fas fa-folder text-yellow-500 mr-1"></i>{% else %}<i class="fas fa-file text-gray-400 mr-1"></i>{% endif %}
+            <input type="text" name="name" value="{{ item.name }}" required
+                   @keydown.escape="editing = false"
+                   x-init="$watch('editing', v => { if(v) $nextTick(() => $el.select()) })"
+                   class="px-2 py-0.5 text-sm border border-indigo-300 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none">
+            <button type="submit" class="text-indigo-500 hover:text-indigo-700 text-xs"><i class="fas fa-check"></i></button>
+            <button type="button" @click="editing = false" class="text-gray-400 hover:text-gray-600 text-xs"><i class="fas fa-times"></i></button>
+          </form>
+
+          {% endwith %}{% else %}
+
+          {# Same but for root level (no subpath prefix) #}
+          <div x-show="!editing">
+            {% if item.is_dir %}
+            <a href="{% url 'core:file_manager' %}?path={{ item.name }}"
+               hx-get="{% url 'core:file_list_partial' %}?path={{ item.name }}"
+               hx-target="#file-list"
+               hx-push-url="{% url 'core:file_manager' %}?path={{ item.name }}"
+               class="text-indigo-600 hover:text-indigo-800 font-medium">
+              <i class="fas fa-folder text-yellow-500 mr-2"></i>{{ item.name }}
+            </a>
+            {% else %}
+            <span class="text-gray-900">
+              <i class="fas fa-file text-gray-400 mr-2"></i>{{ item.name }}
+            </span>
+            {% endif %}
+            <button @click.stop="editing = true" class="ml-2 text-gray-300 hover:text-gray-500 text-xs" title="Rename">
+              <i class="fas fa-pen"></i>
+            </button>
+          </div>
+
+          <form x-show="editing" x-cloak method="post" action="{% url 'core:file_rename' %}" class="flex items-center space-x-1">
+            {% csrf_token %}
+            <input type="hidden" name="path" value="{{ item.name }}">
+            {% if item.is_dir %}<i class="fas fa-folder text-yellow-500 mr-1"></i>{% else %}<i class="fas fa-file text-gray-400 mr-1"></i>{% endif %}
+            <input type="text" name="name" value="{{ item.name }}" required
+                   @keydown.escape="editing = false"
+                   x-init="$watch('editing', v => { if(v) $nextTick(() => $el.select()) })"
+                   class="px-2 py-0.5 text-sm border border-indigo-300 rounded focus:ring-1 focus:ring-indigo-500 focus:outline-none">
+            <button type="submit" class="text-indigo-500 hover:text-indigo-700 text-xs"><i class="fas fa-check"></i></button>
+            <button type="button" @click="editing = false" class="text-gray-400 hover:text-gray-600 text-xs"><i class="fas fa-times"></i></button>
+          </form>
+
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-right text-gray-500">
+          {% if item.is_dir %}
+            —
+          {% elif item.size < 1024 %}
+            {{ item.size }} B
+          {% elif item.size < 1048576 %}
+            {% widthratio item.size 1024 1 %} KB
+          {% else %}
+            {% widthratio item.size 1048576 1 %} MB
+          {% endif %}
+        </td>
+        <td class="px-4 py-3 text-right text-gray-500">
+          {{ item.modified|timesince }} ago
+        </td>
+        <td class="px-4 py-3 text-right">
+          {% if subpath %}{% with item_path=subpath|add:"/"|add:item.name %}
+          {% include "core/partials/file_actions.html" with item_path=item_path item=item all_folders=all_folders %}
+          {% endwith %}{% else %}
+          {% include "core/partials/file_actions.html" with item_path=item.name item=item all_folders=all_folders %}
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="bg-white rounded-xl shadow-sm border p-12 text-center">
+  <i class="fas fa-folder-open text-4xl text-gray-300 mb-3 block"></i>
+  <p class="text-gray-500">This folder is empty.</p>
+  <p class="text-gray-400 text-sm mt-1">Upload files or create a subfolder to get started.</p>
+</div>
+{% endif %}

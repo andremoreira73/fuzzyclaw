@@ -220,6 +220,10 @@
                    class="px-3 py-2 rounded-md text-sm font-medium {% if nav == 'skills' %}text-indigo-600 bg-indigo-50{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-50{% endif %} transition-colors">
                   <i class="fas fa-tools mr-1"></i> Skills
                 </a>
+                <a href="{% url 'core:file_manager' %}"
+                   class="px-3 py-2 rounded-md text-sm font-medium {% if nav == 'files' %}text-indigo-600 bg-indigo-50{% else %}text-gray-600 hover:text-gray-900 hover:bg-gray-50{% endif %} transition-colors">
+                  <i class="fas fa-folder-open mr-1"></i> Files
+                </a>
                 <button x-data @click="$store.board.open = !$store.board.open"
                         class="px-3 py-2 rounded-md text-sm font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50 transition-colors relative">
                   <i class="fas fa-clipboard-list mr-1"></i> Board

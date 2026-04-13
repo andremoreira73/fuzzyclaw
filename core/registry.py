@@ -108,36 +108,46 @@ def validate_agent(data: dict) -> list[str]:
     return errors
 
 
+VALID_SCOPES = {'user', 'run'}
+
+
 def validate_volumes(volumes: list) -> list[str]:
     """Validate volume mount specs from agent frontmatter.
 
-    Checks structure only — security (allowlist/blocklist) is enforced at
-    launch time in containers.py since it depends on runtime settings.
+    Each volume requires: scope (user|run), mount (absolute path), mode (ro|rw).
+    Host paths are resolved at launch time from the scope — no user-specified
+    host paths.
     """
     errors = []
     if not isinstance(volumes, list):
-        return ["'volumes' must be a JSON list."]
+        return ["'volumes' must be a list."]
 
     RESERVED_MOUNTS = {'/app', '/app/skills', '/app/comms'}
+    ALLOWED_APP_MOUNTS = {'/app/data'}
 
     for i, vol in enumerate(volumes):
         prefix = f"volumes[{i}]"
         if not isinstance(vol, dict):
-            errors.append(f"{prefix}: must be an object with host, mount, mode.")
+            errors.append(f"{prefix}: must be an object with scope, mount, mode.")
             continue
 
-        host = vol.get('host')
+        scope = vol.get('scope')
         mount = vol.get('mount')
         mode = vol.get('mode')
 
-        if not host or not isinstance(host, str):
-            errors.append(f"{prefix}: 'host' is required and must be a string.")
+        if not scope or not isinstance(scope, str):
+            errors.append(f"{prefix}: 'scope' is required and must be a string.")
+        elif scope not in VALID_SCOPES:
+            errors.append(f"{prefix}: 'scope' must be one of {sorted(VALID_SCOPES)}, got '{scope}'.")
+
         if not mount or not isinstance(mount, str):
             errors.append(f"{prefix}: 'mount' is required and must be a string.")
         elif not mount.startswith('/'):
             errors.append(f"{prefix}: 'mount' must be an absolute path.")
-        elif mount.rstrip('/') in RESERVED_MOUNTS or any(
-            mount.rstrip('/').startswith(r + '/') for r in RESERVED_MOUNTS
+        elif mount.rstrip('/') not in ALLOWED_APP_MOUNTS and (
+            mount.rstrip('/') in RESERVED_MOUNTS or any(
+                mount.rstrip('/').startswith(r + '/') for r in RESERVED_MOUNTS
+            )
         ):
             errors.append(f"{prefix}: mount '{mount}' conflicts with reserved path.")
 

@@ -194,7 +194,7 @@ Complete the task given to you and return a clear, structured report of your fin
                         mode_label = 'read-only' if vol['mode'] == 'ro' else 'read-write'
                         vol_lines.append(f"- {vol['mount']} ({mode_label})")
                     system_prompt += "\n\n## Mounted Volumes\n" + "\n".join(vol_lines)
-                    system_prompt += "\nUse bash to interact with files in these directories."
+                    system_prompt += "\nUse these exact paths when reading or writing files."
             except (json.JSONDecodeError, KeyError):
                 logger.warning("Failed to parse AGENT_VOLUMES env var")
 
@@ -227,7 +227,7 @@ Complete the task given to you and return a clear, structured report of your fin
                 model=model,
                 tools=agent_tools,
                 system_prompt=system_prompt,
-                backend=FilesystemBackend(root_dir="/app", virtual_mode=True),
+                backend=FilesystemBackend(root_dir="/", virtual_mode=True),
                 skills=['/app/skills'],
                 middleware=middleware,
             )

@@ -97,6 +97,8 @@ Generate **two documents**:
 - **Anonymized version:** `YYYY-MM-DD_Profil_Senior_Expert_anon.md` — for the client (see Anonymization rules below). The header omits the candidate's identity.
 - **Named version:** `YYYY-MM-DD_Profil_Senior_Expert_<candidate_identifier>.md` — for internal use at mb+p. The header includes the candidate's full name and contact details (phone, email) directly below the `# Profile` [# Profil] heading, before the expert title line.
 
+Once you generated and saved these two documents, your job is finished and you may close.
+
 Key constraints for the profile:
 
 **Word budget:**

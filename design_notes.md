@@ -90,6 +90,15 @@ Coordinating agent:
 Filesystem for users:
 
 - comfortable access for users, see @code/reviews/fuzzyclaw-multiuser-files.md
+- should have a button between "skills" and "board" in the navbar
+
+Skills:
+
+- allow user to add skills using the new "Filesystem for users"
+
+Agents:
+
+- allow users to add agents using the new "Filesystem for users" and a button to run sync agents.
 
 Mobile version:
 
@@ -101,6 +110,7 @@ Known issues:
 
 - BoardNotificationMiddleware and `read_messages` have separate cursors. The middleware can re-detect a message that `read_messages` already consumed, sending a redundant `[Board: You have N new message(s)]` to the LLM. Not harmful but wasteful — consider sharing the cursor or having the middleware skip if `read_messages` was the most recent tool call.
 - **Stuck runs** — runs frequently get stranded in `status=running` with nothing actually executing. Currently resolved by editing the row in Django admin or via `POST /api/runs/{id}/cancel/`, but those are workarounds. Root cause still unknown: likely candidates are Celery worker crashes mid-run, container OOM, unhandled exception paths in `core/containers.py` or `agent_runner.py` that skip the terminal-state write, or Redis/DB failures on the completion path. Investigate before adding a sweeper task — the real fix is probably a missing `except` branch somewhere, not a timeout-based janitor.
+- **Coordinator finishes while agents still running** (observed 2026-04-13) — The coordinator marked failed agent_runs (from `/data` path error), dispatched retries, then concluded the run while a retry shenlong was still active in its container. The `CoordinatorGuardMiddleware` should have blocked this. Likely cause: the guard checks `AgentRun.status == 'running'` in the DB, but the failed agent_run was already marked `failed` and the new retry hadn't been recorded yet (or was recorded but the coordinator's model call happened before the DB write). The human had to tell the orphaned shenlong to stop via the board. Investigate the race between dispatch, DB status writes, and the guard's query timing.
 
 Ideas:
 

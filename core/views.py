@@ -1,14 +1,18 @@
 """Dashboard views for FuzzyClaw web UI."""
 import logging
+import os
 import re
+import shutil
 from datetime import datetime, timezone
+from pathlib import Path
 
 import redis as redis_lib
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.views import PasswordChangeDoneView, PasswordChangeView
-from django.http import HttpResponse, JsonResponse
+from django.core.exceptions import SuspiciousFileOperation
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.template.loader import render_to_string
 from django.urls import reverse, reverse_lazy
@@ -551,3 +555,309 @@ def profile_view(request):
         form = ProfileForm(instance=request.user)
 
     return render(request, 'core/profile.html', {'form': form})
+
+
+# ---------------------------------------------------------------------------
+# File Manager
+# ---------------------------------------------------------------------------
+
+def _get_user_root(user) -> Path:
+    """Return the user's data directory, creating it if needed."""
+    user_root = Path(settings.FUZZYCLAW_DATA_DIR) / 'users' / str(user.id)
+    user_root.mkdir(parents=True, exist_ok=True)
+    return user_root
+
+
+def _resolve_user_path(user, relative_path: str) -> Path:
+    """Resolve a relative path within a user's data directory.
+
+    Returns the absolute Path. Raises SuspiciousFileOperation if the path
+    escapes the user's root.
+    """
+    user_root = _get_user_root(user)
+    # Normalize and resolve to catch .. traversal
+    resolved = (user_root / relative_path).resolve()
+    if not str(resolved).startswith(str(user_root.resolve())):
+        raise SuspiciousFileOperation("Path traversal detected")
+    return resolved
+
+
+def _file_info(path: Path) -> dict:
+    """Build file/folder info dict for template rendering."""
+    stat = path.stat()
+    return {
+        'name': path.name,
+        'is_dir': path.is_dir(),
+        'size': stat.st_size if path.is_file() else None,
+        'modified': datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc),
+    }
+
+
+def _list_all_folders(user) -> list[str]:
+    """Return all folder paths relative to the user's root, for move destination picker."""
+    user_root = _get_user_root(user)
+    folders = ['']  # root
+    for dirpath, dirnames, _ in os.walk(user_root):
+        for d in sorted(dirnames):
+            rel = os.path.relpath(os.path.join(dirpath, d), user_root)
+            folders.append(rel)
+    return folders
+
+
+@login_required
+def file_manager(request):
+    """File manager — main page."""
+    subpath = request.GET.get('path', '')
+    try:
+        current_dir = _resolve_user_path(request.user, subpath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not current_dir.is_dir():
+        return HttpResponse("Not a directory.", status=404)
+
+    entries = sorted(current_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    items = [_file_info(e) for e in entries]
+
+    # Build breadcrumb parts
+    parts = [p for p in subpath.strip('/').split('/') if p] if subpath else []
+    breadcrumb_parts = []
+    for i, part in enumerate(parts):
+        breadcrumb_parts.append({
+            'name': part,
+            'path': '/'.join(parts[:i + 1]),
+        })
+
+    context = {
+        'nav': 'files',
+        'items': items,
+        'subpath': subpath,
+        'breadcrumb_parts': breadcrumb_parts,
+        'breadcrumbs': [{'label': 'Files'}],
+        'all_folders': _list_all_folders(request.user),
+    }
+    return render(request, 'core/file_manager.html', context)
+
+
+@login_required
+def file_list_partial(request):
+    """HTMX partial — file list for a given subpath."""
+    subpath = request.GET.get('path', '')
+    try:
+        current_dir = _resolve_user_path(request.user, subpath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not current_dir.is_dir():
+        return HttpResponse("Not a directory.", status=404)
+
+    entries = sorted(current_dir.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    items = [_file_info(e) for e in entries]
+
+    parts = [p for p in subpath.strip('/').split('/') if p] if subpath else []
+    breadcrumb_parts = []
+    for i, part in enumerate(parts):
+        breadcrumb_parts.append({
+            'name': part,
+            'path': '/'.join(parts[:i + 1]),
+        })
+
+    context = {
+        'items': items,
+        'subpath': subpath,
+        'breadcrumb_parts': breadcrumb_parts,
+        'all_folders': _list_all_folders(request.user),
+    }
+    return render(request, 'core/partials/file_list.html', context)
+
+
+@login_required
+@require_POST
+def file_upload(request):
+    """Upload file(s) to the user's directory."""
+    subpath = request.POST.get('path', '')
+    try:
+        target_dir = _resolve_user_path(request.user, subpath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not target_dir.is_dir():
+        return HttpResponse("Target directory not found.", status=404)
+
+    max_size = getattr(settings, 'FUZZYCLAW_FILE_UPLOAD_MAX_SIZE', 50 * 1024 * 1024)
+
+    for uploaded in request.FILES.getlist('files'):
+        if uploaded.size > max_size:
+            messages.error(request, f'File "{uploaded.name}" exceeds size limit.')
+            continue
+        # Sanitize filename
+        safe_name = Path(uploaded.name).name
+        if not safe_name or safe_name.startswith('.'):
+            messages.error(request, f'Invalid filename: "{uploaded.name}"')
+            continue
+        dest = target_dir / safe_name
+        with open(dest, 'wb') as f:
+            for chunk in uploaded.chunks():
+                f.write(chunk)
+
+    return redirect(reverse('core:file_manager') + f'?path={subpath}')
+
+
+@login_required
+def file_download(request):
+    """Download a file from the user's directory."""
+    filepath = request.GET.get('path', '')
+    if not filepath:
+        return HttpResponse("No file specified.", status=400)
+    try:
+        resolved = _resolve_user_path(request.user, filepath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not resolved.is_file():
+        return HttpResponse("File not found.", status=404)
+
+    return FileResponse(open(resolved, 'rb'), as_attachment=True, filename=resolved.name)
+
+
+@login_required
+@require_POST
+def file_delete(request):
+    """Delete a file from the user's directory."""
+    filepath = request.POST.get('path', '')
+    if not filepath:
+        return HttpResponse("No file specified.", status=400)
+    try:
+        resolved = _resolve_user_path(request.user, filepath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not resolved.is_file():
+        return HttpResponse("File not found.", status=404)
+
+    resolved.unlink()
+    # Redirect to parent directory
+    parent_subpath = str(Path(filepath).parent)
+    if parent_subpath == '.':
+        parent_subpath = ''
+    return redirect(reverse('core:file_manager') + f'?path={parent_subpath}')
+
+
+@login_required
+@require_POST
+def folder_create(request):
+    """Create a subfolder in the user's directory."""
+    subpath = request.POST.get('path', '')
+    folder_name = request.POST.get('name', '').strip()
+    if not folder_name or '/' in folder_name or folder_name.startswith('.'):
+        messages.error(request, 'Invalid folder name.')
+        return redirect(reverse('core:file_manager') + f'?path={subpath}')
+
+    try:
+        parent = _resolve_user_path(request.user, subpath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    new_dir = parent / folder_name
+    new_dir.mkdir(exist_ok=True)
+    return redirect(reverse('core:file_manager') + f'?path={subpath}')
+
+
+@login_required
+@require_POST
+def folder_delete(request):
+    """Delete a subfolder (and all contents) from the user's directory."""
+    folderpath = request.POST.get('path', '')
+    if not folderpath:
+        return HttpResponse("No folder specified.", status=400)
+    try:
+        resolved = _resolve_user_path(request.user, folderpath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    user_root = _get_user_root(request.user)
+    if resolved == user_root.resolve():
+        return HttpResponse("Cannot delete root directory.", status=400)
+
+    if not resolved.is_dir():
+        return HttpResponse("Folder not found.", status=404)
+
+    shutil.rmtree(resolved)
+    parent_subpath = str(Path(folderpath).parent)
+    if parent_subpath == '.':
+        parent_subpath = ''
+    return redirect(reverse('core:file_manager') + f'?path={parent_subpath}')
+
+
+@login_required
+@require_POST
+def file_rename(request):
+    """Rename a file or folder within the user's directory."""
+    filepath = request.POST.get('path', '')
+    new_name = request.POST.get('name', '').strip()
+    if not filepath or not new_name:
+        return HttpResponse("Missing path or name.", status=400)
+    if '/' in new_name or new_name.startswith('.'):
+        return HttpResponse("Invalid name.", status=400)
+
+    try:
+        resolved = _resolve_user_path(request.user, filepath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid path.", status=400)
+
+    if not resolved.exists():
+        return HttpResponse("Not found.", status=404)
+
+    new_path = resolved.parent / new_name
+    # Ensure the new path is still inside the user root
+    try:
+        _resolve_user_path(request.user, str(Path(filepath).parent / new_name))
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid name.", status=400)
+
+    if new_path.exists():
+        messages.error(request, f'"{new_name}" already exists.')
+    else:
+        resolved.rename(new_path)
+
+    parent_subpath = str(Path(filepath).parent)
+    if parent_subpath == '.':
+        parent_subpath = ''
+    return redirect(reverse('core:file_manager') + f'?path={parent_subpath}')
+
+
+@login_required
+@require_POST
+def file_move(request):
+    """Move a file or folder to another location within the user's directory."""
+    filepath = request.POST.get('path', '')
+    destination = request.POST.get('destination', '').strip()
+    if not filepath:
+        return HttpResponse("No file specified.", status=400)
+
+    try:
+        src = _resolve_user_path(request.user, filepath)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid source path.", status=400)
+
+    if not src.exists():
+        return HttpResponse("Source not found.", status=404)
+
+    try:
+        dest_dir = _resolve_user_path(request.user, destination)
+    except SuspiciousFileOperation:
+        return HttpResponse("Invalid destination.", status=400)
+
+    if not dest_dir.is_dir():
+        return HttpResponse("Destination is not a directory.", status=400)
+
+    target = dest_dir / src.name
+    if target.exists():
+        messages.error(request, f'"{src.name}" already exists in the destination.')
+    else:
+        shutil.move(str(src), str(target))
+
+    parent_subpath = str(Path(filepath).parent)
+    if parent_subpath == '.':
+        parent_subpath = ''
+    return redirect(reverse('core:file_manager') + f'?path={parent_subpath}')

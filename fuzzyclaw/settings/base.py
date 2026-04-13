@@ -157,6 +157,7 @@ FUZZYCLAW_TOOLS = {
     'web_scrape': 'Scrape a web page and return cleaned text (uses ScrapingBee API).',
     'web_search': 'Search the web for information.',
     'message_board': 'Post and read messages on the run message board (human-in-the-loop + agent-to-agent).',
+    'platform_query': 'Query FuzzyClaw platform state — briefings, runs, reports (read-only REST API calls).',
     # Deep Agents built-in filesystem tools (always available, listed for reference)
     'ls': 'List directory contents (built-in).',
     'read_file': 'Read a file (built-in).',

@@ -41,13 +41,15 @@ def get_board_redis():
         return None
 
 
-def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
+def build_message_board_tools(redis_client, self_id: str, run_id: str, initial_position: str = '0-0') -> list:
     """Build LangChain tools for the message board.
 
     Args:
         redis_client: Connected Redis client (decode_responses=True).
         self_id: This agent's board identity (e.g. market-researcher_423).
         run_id: Current run ID.
+        initial_position: Starting stream position for read_messages (default
+            '0-0' reads all history). Pass a message ID to skip earlier entries.
 
     Returns:
         List of @tool functions: post_message, read_messages, list_participants.
@@ -60,7 +62,7 @@ def build_message_board_tools(redis_client, self_id: str, run_id: str) -> list:
     agent_wait = int(os.environ.get('FUZZYCLAW_AGENT_TIMEOUT', '600'))
 
     # Track read position across calls within this agent's lifetime
-    last_seen_id = '0-0'
+    last_seen_id = initial_position
     # Minimum wait floor after posting — None means no floor active
     _reply_wait_floor: int | None = None
 
@@ -192,7 +194,7 @@ class BoardSetup:
         self.prompt_section = prompt_section
 
 
-def setup_message_board(redis_client, self_id: str, run_id: str) -> BoardSetup | None:
+def setup_message_board(redis_client, self_id: str, run_id: str, initial_position: str = '0-0') -> BoardSetup | None:
     """Set up all message board components for an agent.
 
     Handles participant registration, tool creation, middleware creation,
@@ -202,6 +204,8 @@ def setup_message_board(redis_client, self_id: str, run_id: str) -> BoardSetup |
         redis_client: Connected Redis client, or None.
         self_id: This agent's board identity (e.g. market-researcher_423).
         run_id: Current run ID.
+        initial_position: Starting stream position for read_messages (default
+            '0-0'). Pass a message ID to skip earlier entries.
 
     Returns:
         BoardSetup with tools, middleware, and prompt_section, or None if
@@ -219,7 +223,7 @@ def setup_message_board(redis_client, self_id: str, run_id: str) -> BoardSetup |
         logger.warning("Message board registration failed: %s", e)
         return None
 
-    tools = build_message_board_tools(redis_client, self_id, run_id)
+    tools = build_message_board_tools(redis_client, self_id, run_id, initial_position)
 
     from agent_tools.board_middleware import BoardNotificationMiddleware
     middleware = [BoardNotificationMiddleware(redis_client, self_id, run_id)]

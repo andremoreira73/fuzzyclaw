@@ -48,4 +48,10 @@ urlpatterns = [
     path('runs/<int:run_pk>/board/', views.board_messages, name='board_messages'),
     path('runs/<int:run_pk>/board/reply/', views.board_reply, name='board_reply'),
     path('runs/<int:run_pk>/board/participants/', views.board_participants, name='board_participants'),
+
+    # Fuzzy Board (permanent assistant stream)
+    path('board/fuzzy/status/', views.fuzzy_status, name='fuzzy_status'),
+    path('board/fuzzy/', views.fuzzy_board_messages, name='fuzzy_board_messages'),
+    path('board/fuzzy/reply/', views.fuzzy_board_reply, name='fuzzy_board_reply'),
+    path('board/fuzzy/participants/', views.fuzzy_board_participants, name='fuzzy_board_participants'),
 ]

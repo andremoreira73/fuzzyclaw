@@ -60,9 +60,34 @@ NL schedule → Gemini Flash LLM call → cron → `django-celery-beat` Periodic
 
 Login, logout, profile, password change. Django 5 returns 405 on GET `/logout/` — hence the confirmation page that POSTs. Account templates live under `core/` (not `registration/`) to avoid `INSTALLED_APPS` ordering collisions with Django admin's own templates.
 
-### Direct Agent Dispatch (planned)
+### Fuzzy — Always-On Platform Assistant (implemented)
 
-Dashboard area to fire individual agents without coordinator/briefing. Agent picker + task textarea + report display. Same container launch path. Good candidate for personal assistant agent (Documents + Gmail).
+Persistent agent ("fuzzy") that starts with `docker compose up` and stays alive indefinitely. Idle until the user posts on the board, wakes up, responds, goes idle. Not a coordinator — it's the user's personal assistant for FuzzyClaw.
+
+**Architecture:** Docker Compose service running `fuzzy_runner.py`. Idle loop blocks on `XREAD` against `fuzzyclaw:board:fuzzy`. Each incoming message creates a fresh agent invocation (clean context, persistent memory). Graceful shutdown on SIGTERM. Auto-reconnects on Redis connection loss.
+
+**Board identity:** `fuzzy` on stream `fuzzyclaw:board:fuzzy` (permanent, never cleaned up). Always appears as first entry in the board panel's run selector. Dashboard routes fuzzy-specific URLs (`/board/fuzzy/`, `/board/fuzzy/reply/`, `/board/fuzzy/participants/`).
+
+**Platform query tools** (`agent_tools/platform_query.py`): `list_briefings`, `get_briefing`, `list_runs`, `get_run`, `list_agent_runs`, `get_agent_report`. Calls the Django REST API via `requests` with a DRF auth token (`API_TOKEN` env var). Registered as the `platform_query` tool bundle in `build_tools()`.
+
+**Memory:** `(owner_id, "fuzzy")` namespace in PostgresStore. Memory never collides across users — the sender's user ID determines the namespace.
+
+**Container:** `Dockerfile.fuzzy` (same base as `Dockerfile.agent`, different entrypoint). Skills mounted read-only, user data mounted read-write at `/app/data`.
+
+**Multi-user path:** One fuzzy container serves all users. The container is stateless between conversations — per-user scoping comes from the message sender:
+- Memory namespace: `(sender_user_id, "fuzzy")`
+- Board streams: `fuzzyclaw:board:fuzzy:{user_id}` (per-user, for privacy)
+- Platform queries: service account token + `?owner=<sender_id>` filter on the API
+- Phase 1 (current): single-user, `OWNER_ID=1` hardcoded, user's own DRF token
+- Phase 2: service account user, API ViewSets accept `?owner=` param for service accounts, per-user board streams, `OWNER_ID` derived from message sender
+
+**Setup (phase 1):** Create a DRF auth token (Admin > Auth Token > Tokens, or `docker compose exec web python manage.py drf_create_token <username>`), set it as `FUZZYCLAW_FUZZY_API_TOKEN` in `.env`, then `docker compose up -d fuzzy`.
+
+Full plan: `code_reviews/fuzzy-always-on-assistant.md`.
+
+### Direct Agent Dispatch (superseded by Fuzzy)
+
+Originally planned as a dashboard area to fire individual agents without coordinator/briefing. Fuzzy replaces this — it's always available and can do specialist work directly via skills.
 
 ## Design Decisions
 
@@ -82,12 +107,13 @@ To do:
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
 - Direct agent dispatch (talk to a specific agent without coordinator/briefing)
 
-Coordinating agent:
+DONE: Fuzzy: the assistant
 
-- should have memory;
-- should be accessible via chat board even when no run is going on.
+- has memory;
+- is accessible via chat board even when no run is going on
+- oversees the whole thing, not only one specific briefing!
 
-Filesystem for users:
+DONE: Filesystem for users:
 
 - comfortable access for users, see @code/reviews/fuzzyclaw-multiuser-files.md
 - should have a button between "skills" and "board" in the navbar

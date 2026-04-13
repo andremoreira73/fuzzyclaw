@@ -1,6 +1,6 @@
 ---
 name: shenlong
-description: General-purpose agent for any task. Dispatch when no specialist fits, or when the task spans multiple domains.
+description: General-purpose agent for any task. It has long-term memory. Dispatch when no specialist fits, or when the task spans multiple domains.
 model: gpt-5.4
 tools: ["web_search", "web_scrape", "bash", "message_board"]
 memory: true

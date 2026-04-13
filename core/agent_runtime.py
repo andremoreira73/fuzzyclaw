@@ -156,6 +156,13 @@ def run_coordinator(briefing, run, max_retries=django_settings.FUZZYCLAW_COORDIN
         if last_message.content:
             return last_message.content
 
+        # Gemini returns empty after a final tool call (e.g. submit_coordinator_report).
+        # Check if the run was already completed via the tool — if so, don't retry.
+        run.refresh_from_db()
+        if run.status == 'completed' and run.coordinator_report:
+            logger.info("Coordinator finished via tool call (empty final message, but run is completed)")
+            return run.coordinator_report
+
         logger.warning(
             "Coordinator returned empty response on attempt %d/%d (possible MALFORMED_FUNCTION_CALL)",
             attempt, max_retries,

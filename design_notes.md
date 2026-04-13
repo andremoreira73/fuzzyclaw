@@ -44,11 +44,13 @@ Per-run shared communication channel. Agents, coordinator, and human exchange me
 
 **Coordinator board access**: The coordinator registers as `coordinator_{run_id}` on the board and gets `post_message`, `read_messages`, `list_participants` tools — same as specialist agents.
 
-**Dashboard panel** (Alpine.js): draggable, run selector, All/To-me filter, HTMX polling every 3s, `@` autocomplete for participants.
+**Dashboard panel** (Alpine.js): draggable, run selector, All/To-me filter, HTMX polling every 3s, `@` autocomplete with arrow key navigation and type-ahead filtering.
 
 **Django views** (Redis-only): `board_messages`, `board_reply`, `board_badge`, `board_active_runs`, `board_participants`. Board visibility is based on stream content (`XLEN > 0`), not run status or participant count.
 
 **Connection pooling:** Django board views share a module-level `ConnectionPool` instead of creating a new Redis connection per request.
+
+**Mention parser:** `@([\w-]+)` regex — captures word chars and hyphens only. Trailing punctuation (e.g. `@fuzzy: hello`) is stripped, not included in the recipient name.
 
 **Lessons learned:** Don't name specific tools in agent prompts. Don't build a sync layer when both sides can read Redis. `hx-boost="true"` on `<body>` breaks HTMX partials. Alpine `@click` only works inside `x-data` scope.
 
@@ -81,13 +83,15 @@ Persistent agent ("fuzzy") that starts with `docker compose up` and stays alive 
 - Phase 1 (current): single-user, `OWNER_ID=1` hardcoded, user's own DRF token
 - Phase 2: service account user, API ViewSets accept `?owner=` param for service accounts, per-user board streams, `OWNER_ID` derived from message sender
 
+**Activity indicator:** Redis key `fuzzyclaw:fuzzy:status` set to `"thinking"` while processing (auto-expires after 5min). Board panel polls `/board/fuzzy/status/` every 2s. Shows bouncing-dot typing indicator in the feed area and a `●` prefix on "Fuzzy Assistant" in the run selector. Both disappear when fuzzy finishes.
+
+**Board tools `initial_position`:** `setup_message_board()` accepts an `initial_position` parameter (default `'0-0'`). Fuzzy passes the triggering message's stream ID so the agent's `read_messages` tool starts after the trigger, not from the beginning of the permanent stream.
+
+**Duplicate-post prevention:** After the agent's ReAct loop, the runner checks the last 5 stream entries. If fuzzy already posted via the board tool, the safety-net post is skipped.
+
 **Setup (phase 1):** Create a DRF auth token (Admin > Auth Token > Tokens, or `docker compose exec web python manage.py drf_create_token <username>`), set it as `FUZZYCLAW_FUZZY_API_TOKEN` in `.env`, then `docker compose up -d fuzzy`.
 
 Full plan: `code_reviews/fuzzy-always-on-assistant.md`.
-
-### Direct Agent Dispatch (superseded by Fuzzy)
-
-Originally planned as a dashboard area to fire individual agents without coordinator/briefing. Fuzzy replaces this — it's always available and can do specialist work directly via skills.
 
 ## Design Decisions
 
@@ -97,7 +101,7 @@ Originally planned as a dashboard area to fire individual agents without coordin
 
 ### Code review hardening (2026-03-25, 3 rounds)
 
-Cross-model review by GPT-5.4 Codex + Claude Opus. All fixes landed. Full findings in `code_reviews/`. Key areas: cross-user API scoping, XSS sanitization, symlink bypass in volume validation, container slot leak, base image hashing, agent error handling, board reliability. 170 tests passing.
+Cross-model review by GPT-5.4 Codex + Claude Opus. All fixes landed. Full findings in `code_reviews/`. Key areas: cross-user API scoping, XSS sanitization, symlink bypass in volume validation, container slot leak, base image hashing, agent error handling, board reliability. 174 tests passing.
 
 ## Graffiti Wall
 
@@ -105,13 +109,18 @@ To do:
 
 - Stop button (cancel a running run from the UI)
 - WhatsApp channel (as Message Board delivery channel, reference nanoclaw)
-- Direct agent dispatch (talk to a specific agent without coordinator/briefing)
+- Cross-board @fuzzy — wake fuzzy from within any run board (forward message to fuzzy's stream with run context, respond on the originating run board)
+- Fuzzy multi-user (phase 2) — service account, `?owner=` API filter, per-user board streams, derive OWNER_ID from sender
 
-DONE: Fuzzy: the assistant
+DONE: Fuzzy: the assistant (2026-04-13)
 
-- has memory;
-- is accessible via chat board even when no run is going on
-- oversees the whole thing, not only one specific briefing!
+- has memory, platform query tools, web access, skills
+- accessible via chat board even when no run is going on
+- oversees the whole thing, not only one specific briefing
+- typing indicator + pulsing dot while thinking
+- supersedes "Direct agent dispatch" idea
+
+DONE: Direct agent dispatch — superseded by fuzzy (always available, does specialist work via skills)
 
 DONE: Filesystem for users:
 

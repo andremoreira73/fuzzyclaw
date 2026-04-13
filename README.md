@@ -22,9 +22,10 @@ It is heavily inspired by [**OpenClaw**](https://github.com/openclaw/openclaw) a
 
 - **Coordinator + specialists** — one agent delegates, specialists execute
 - **Docker-isolated specialists** — agents run in containers, not loose on your machine
+- **Always-on assistant** — Fuzzy, the platform assistant, is available 24/7 on the message board
 - **Human-in-the-loop** — talk to agents while a run is still happening
 - **Persistent by design** — briefings, reports, history, search, and scheduling live in PostgreSQL
-- **Django-native** — auth, admin, dashboards, and workflows included
+- **Django-native** — auth, admin, dashboards, file manager, and workflows included
 - **Model-flexible** — use the model that fits each agent
 
 ## Philosophy
@@ -36,8 +37,9 @@ FuzzyClaw is built around three ideas: **delegation**, **isolation**, and **oper
 - **Shenlong** is the fallback generalist. When no specialist is a good fit, the coordinator can call Shenlong.
 - The **Message Board** is the shared communication layer for each run, so agents, coordinator, and human can coordinate in real time.
 - **Skills** are shared capabilities under `skills/` that all agents can use when relevant.
+- **Fuzzy** is the always-on platform assistant. It starts with `docker compose up` and lives on the message board permanently. It can query briefings, runs, and reports, search the web, use skills, and remember user preferences across conversations. It's not a coordinator — it doesn't dispatch agents — but it knows everything that's happening on the platform.
 
-Django handles everything user-facing: authentication, dashboards, the briefing editor, run history, admin, and scheduling. The frontend is server-rendered HTML with [**HTMX**](https://htmx.org/) where it makes sense.
+Django handles everything user-facing: authentication, dashboards, the briefing editor, run history, file manager, admin, and scheduling. The frontend is server-rendered HTML with [**HTMX**](https://htmx.org/) where it makes sense.
 
 The result is a system that feels less like an agent demo and more like an operational workspace for running real agent workflows.
 
@@ -72,6 +74,13 @@ Coordinator synthesizes reports -> Run.coordinator_report
     |
     v
 Dashboard shows results + message history
+
+Fuzzy (always-on assistant, separate Docker Compose service)
+    |-- listens on permanent board stream
+    |-- queries platform state (briefings, runs, reports) via REST API
+    |-- has persistent memory, web access, skills
+    |-- conversational memory with living summary
+    \-- one instance serves all users (scoped by user_id)
 ```
 
 <p align="center">
@@ -101,8 +110,8 @@ model: gpt-5.4
 tools: ["web_search", "web_scrape", "bash", "message_board"]
 memory: true
 volumes:
-  - host: "./in_and_out"
-    mount: "/data"
+  - scope: "user"
+    mount: "/app/data"
     mode: "rw"
 ---
 You are Shenlong, a general-purpose agent...
@@ -118,14 +127,15 @@ Directories in `skills/` with a `SKILL.md` file and optional sub-folders, follow
 
 Python functions in `agent_tools/`. Currently ships with:
 
-| Tool                                 | What it does        | Notes                                                                                                  |
-| ------------------------------------ | ------------------- | ------------------------------------------------------------------------------------------------------ |
-| `bash`                               | Shell execution     | Only grant to models you trust                                                                         |
-| `web_search`                         | Google search       | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
-| `web_scrape`                         | Page scraping       | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
-| `career_scrape`                      | Job listing scraper | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
-| `remember` / `recall` / `recall_all` | Persistent memory   | PostgresStore, namespaced per agent                                                                    |
-| `message_board`                      | Real-time messaging | `post_message`, `read_messages`, `list_participants` — Redis Streams, with notification middleware     |
+| Tool                                 | What it does         | Notes                                                                                                  |
+| ------------------------------------ | -------------------- | ------------------------------------------------------------------------------------------------------ |
+| `bash`                               | Shell execution      | Only grant to models you trust                                                                         |
+| `web_search`                         | Google search        | Via [ScrapingBee](https://www.scrapingbee.com/) SERP API (swap for your preferred provider)            |
+| `web_scrape`                         | Page scraping        | ScrapingBee + HTML cleaning (swap-friendly)                                                            |
+| `career_scrape`                      | Job listing scraper  | Domain-specific selectors for EN/DE job pages. Literally done for a friend, could be useful to many... |
+| `remember` / `recall` / `recall_all` | Persistent memory    | PostgresStore, scoped per user + agent + briefing                                                      |
+| `message_board`                      | Real-time messaging  | `post_message`, `read_messages`, `list_participants` — Redis Streams, with notification middleware     |
+| `platform_query`                     | Platform state query | Fuzzy's tools: list/get briefings, runs, agent reports via REST API                                    |
 
 The scraping tools use ScrapingBee because that's what we use. Swapping to Browserless, Playwright, or raw requests is straightforward; each tool is a single Python file.
 
@@ -135,18 +145,16 @@ Write a natural language schedule in the briefing ("every weekday at 9am", "twic
 
 No cron jobs on the host — everything goes through `django-celery-beat`, visible and editable from the Django admin. Some will find this a limitation, but it's a matter of taste. I want to see in the admin panel what is scheduled and what is not. The coordinator can also manage schedules programmatically via its `manage_schedule` tool — so your briefings can adapt their own frequency based on what the agents find.
 
-### My `in_and_out` Strategy
+### File Manager & Volume Scoping
 
-Agents run in isolated containers, but sometimes they need to produce files (reports, CSVs, data exports). The `volumes` field in agent frontmatter mounts host directories into the container. We use `./in_and_out/` as the standard exchange point:
+Agents run in isolated containers, but they often need to produce or read files. The `volumes` field in agent frontmatter uses scoped mounts:
 
-```
-in_and_out/
-├── market_research/     <- market-researcher writes here
-├── misc/                <- shenlong writes here
-└── ...
-```
+- **`scope: "user"`** — mounts `data/users/{owner_id}/` into the container. Private per user. Accessible from the dashboard's File Manager (`/files/`).
+- **`scope: "run"`** — mounts `data/runs/run_{run_id}/` for cross-agent file sharing within a single run. Cleaned up after.
 
-The host can read the output; the agent can't escape its mount. But feel free (at your own risk) to mount other folders on your disk. Just make sure they're not in `FUZZYCLAW_VOLUME_BLOCKLIST`.
+The **File Manager** in the dashboard lets users browse, upload, download, rename, move, and delete files in their personal data directory — the same directory their agents read from and write to.
+
+Agent memory is scoped to `(owner_id, agent_name, briefing_id)`, so the same agent running for different briefings keeps separate memories.
 
 ## Tech Stack
 
@@ -198,6 +206,11 @@ docker compose exec web python manage.py sync_images
 # Create your admin user
 docker compose exec web python manage.py createsuperuser
 
+# Set up Fuzzy (the always-on assistant)
+# Create an API token: Admin > Auth Token > Tokens > Add (pick your user)
+# Add to .env: FUZZYCLAW_FUZZY_API_TOKEN=<your-token>
+# Then restart: docker compose up -d fuzzy
+
 # Open the dashboard
 open http://localhost:8200
 ```
@@ -234,6 +247,7 @@ DATABASE_URL=sqlite:///test.db python manage.py test core
 ```
 fuzzyclaw/
 ├── agents/                  # Agent definitions (*.md) — drop a file, it's live
+│   ├── fuzzy.md             # Always-on platform assistant
 │   ├── shenlong.md          # General-purpose agent (the divine dragon)
 │   ├── market-researcher.md # Web research specialist
 │   ├── career-scraper.md    # Job listing scraper
@@ -243,13 +257,16 @@ fuzzyclaw/
 │       └── SKILL.md
 ├── agent_tools/             # Python tools baked into agent containers
 │   ├── message_board.py     # Board tools + setup_message_board() entry point
-│   └── board_middleware.py  # BoardNotificationMiddleware (before_model)
+│   ├── board_middleware.py  # BoardNotificationMiddleware (before_model)
+│   └── platform_query.py   # REST API query tools (fuzzy's platform awareness)
 ├── agent_runner.py          # Container entrypoint for specialist agents
+├── fuzzy_runner.py          # Container entrypoint for fuzzy (idle loop + conversation history)
 ├── core/                    # Django app: models, views, API, scheduling, containers
 ├── templates/               # Django templates with HTMX
-├── in_and_out/              # Host-side data exchange with agent containers
-├── docker-compose.yml       # Platform services
-├── Dockerfile.agent         # Base image for agent containers
+├── data/                    # User and run data (scoped volumes, file manager)
+├── docker-compose.yml       # Platform services (db, redis, web, celery, celery-beat, fuzzy)
+├── Dockerfile.agent         # Base image for specialist agent containers
+├── Dockerfile.fuzzy         # Image for the fuzzy assistant container
 └── design_notes.md          # Architecture decisions and rationale
 ```
 
@@ -285,11 +302,18 @@ nanoclaw is excellent and inspired FuzzyClaw directly — especially the contain
 
 Things I want to add when time allows:
 
+- **Cross-board @fuzzy** — wake fuzzy from within any run board, not just its own stream
 - **WhatsApp channel** — notifications and commands via WhatsApp (the infra is ready, just needs wiring)
-- **Direct agent dispatch** — talk to a specific agent one-on-one from the dashboard, no coordinator needed
 - **Stop button** — cancel a running run from the UI
+- **Memory TTL** — auto-expire stale agent memories (PostgresStore already supports `ttl_minutes`)
 - **More tools** — email reading, document parsing, code execution sandboxes
 - **Better dashboard** — run comparisons, trend charts, search across reports
+
+Recently shipped:
+- **Fuzzy** — always-on platform assistant with conversational memory and platform awareness
+- **File Manager** — browse, upload, and manage agent data files from the dashboard
+- **Briefing-scoped memories** — agents remember per briefing, not globally
+- **Multi-user fuzzy** — one container, per-user memory and conversation isolation
 
 ## Contributing
 

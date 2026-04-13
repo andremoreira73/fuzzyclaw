@@ -11,11 +11,14 @@
     <!-- Header -->
     <div class="flex justify-between items-start mb-6">
       <div class="flex-1 mr-4">
-        <input type="text"
-               name="title"
-               value="{{ briefing.title }}"
-               class="text-2xl font-bold text-gray-900 bg-transparent border-0 border-b-2 border-transparent hover:border-gray-300 focus:border-indigo-500 focus:ring-0 w-full px-0 transition-colors"
-               placeholder="Briefing title">
+        <div class="flex items-center space-x-2">
+          <input type="text"
+                 name="title"
+                 value="{{ briefing.title }}"
+                 class="text-2xl font-bold text-gray-900 bg-transparent border-0 border-b-2 border-transparent hover:border-gray-300 focus:border-indigo-500 focus:ring-0 w-full px-0 transition-colors"
+                 placeholder="Briefing title">
+          <span class="text-sm text-gray-400 font-mono flex-shrink-0" title="Briefing ID — agent memories are scoped to this ID">#{{ briefing.pk }}</span>
+        </div>
       </div>
       <div class="flex items-center space-x-2 flex-shrink-0">
         <a href="{% url 'core:briefing_list' %}"

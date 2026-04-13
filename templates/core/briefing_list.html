@@ -25,6 +25,7 @@
     <div class="flex items-start justify-between">
       <div class="flex-1 min-w-0">
         <div class="flex items-center space-x-3">
+          <span class="text-xs text-gray-400 font-mono">#{{ briefing.pk }}</span>
           <h3 class="text-base font-semibold text-gray-900 group-hover:text-indigo-600 transition-colors truncate">{{ briefing.title }}</h3>
           {% if briefing.is_active %}
           <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">Active</span>

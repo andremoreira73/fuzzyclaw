@@ -153,9 +153,11 @@ document.addEventListener('alpine:init', () => {
     loadFeed() {
       if (!this.currentRunId) return;
       const url = this._boardUrl('?filter=' + this.filterMode);
+      const feed = document.getElementById('board-feed');
+      // Only auto-scroll if the user is already near the bottom
+      const wasNearBottom = feed && (feed.scrollHeight - feed.scrollTop - feed.clientHeight < 80);
       htmx.ajax('GET', url, {target: '#board-feed', swap: 'innerHTML'}).then(() => {
-        const feed = document.getElementById('board-feed');
-        if (feed) feed.scrollTop = feed.scrollHeight;
+        if (feed && wasNearBottom) feed.scrollTop = feed.scrollHeight;
       });
     },
 

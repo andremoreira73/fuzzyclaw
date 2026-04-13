@@ -3,7 +3,7 @@ name: market-researcher
 description: Searches the web for market intelligence, company news, and industry trends. Can search and then scrape relevant pages for details.
 model: gpt-5.4
 tools: ["web_search", "web_scrape", "bash"]
-memory: true
+memory: false
 volumes:
   - scope: "user"
     mount: "/app/data"

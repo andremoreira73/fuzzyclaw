@@ -32,7 +32,7 @@ import yaml
 
 from deepagents import create_deep_agent
 from deepagents.backends import FilesystemBackend
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from agent_tools import build_tools
 from agent_tools.memory import build_memory_tools, get_memory_store
@@ -156,12 +156,168 @@ def build_system_prompt(agent_def: dict, board_prompt: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Conversation history with living summary
+# ---------------------------------------------------------------------------
+
+HISTORY_MAX = int(os.environ.get('FUZZY_HISTORY_MAX', '15'))
+HISTORY_KEEP_RECENT = int(os.environ.get('FUZZY_HISTORY_KEEP_RECENT', '3'))
+SUMMARY_MODEL = os.environ.get('FUZZY_SUMMARY_MODEL', 'gemini-2.5-flash')
+
+
+def _read_board_messages(board_redis, board_stream: str, self_id: str,
+                         trigger_id: str, user_id: str = '') -> list[dict]:
+    """Read relevant messages from the board stream (chronological order).
+
+    Returns a list of dicts with 'role' ('human' or 'assistant') and 'content'.
+    Stops before the trigger_id entry. Filters by user_id if set.
+    """
+    stream_key = f"fuzzyclaw:board:{board_stream}"
+    try:
+        # Overfetch to account for inter-agent messages we'll filter out
+        raw = board_redis.xrevrange(stream_key, count=HISTORY_MAX * 5)
+    except Exception as e:
+        logger.warning("Failed to read board history: %s", e)
+        return []
+
+    raw.reverse()  # chronological order
+
+    messages = []
+    for entry_id, data in raw:
+        # Stop before the trigger message
+        if entry_id == trigger_id:
+            break
+
+        sender = data.get('from', '')
+        recipient = data.get('to', '')
+
+        # Filter by user_id if provided (phase 3 multi-user)
+        if user_id:
+            msg_user_id = data.get('user_id', '')
+            if msg_user_id and msg_user_id != user_id:
+                continue
+
+        content = data.get('content', '').strip()
+        if not content:
+            continue
+
+        # Only include human<->fuzzy messages
+        if sender == 'human' and (recipient == self_id or recipient == 'all'):
+            messages.append({'role': 'human', 'content': content})
+        elif sender == self_id:
+            messages.append({'role': 'assistant', 'content': content})
+
+    return messages
+
+
+def _summarize_messages(older_messages: list[dict], existing_summary: str,
+                        summary_model) -> str:
+    """Summarize older conversation messages into a concise paragraph.
+
+    Uses a cheap LLM call. Incorporates any existing summary.
+    """
+    lines = []
+    if existing_summary:
+        lines.append(f"Previous summary: {existing_summary}")
+    for msg in older_messages:
+        role = "User" if msg['role'] == 'human' else "Fuzzy"
+        lines.append(f"{role}: {msg['content']}")
+
+    prompt = (
+        "Summarize this conversation between a user and their AI assistant (Fuzzy) "
+        "into 2-4 concise sentences. Preserve key facts, decisions, and any data "
+        "the user asked about. Do not add commentary.\n\n"
+        + "\n".join(lines)
+    )
+
+    try:
+        result = summary_model.invoke([HumanMessage(content=prompt)])
+        content = result.content
+        if isinstance(content, list):
+            content = " ".join(
+                block.get("text", "") if isinstance(block, dict) else str(block)
+                for block in content
+            ).strip()
+        return content
+    except Exception as e:
+        logger.warning("Summary LLM call failed: %s", e)
+        # Fallback: just keep the existing summary
+        return existing_summary or ""
+
+
+def build_conversation_history(board_redis, board_stream: str, self_id: str,
+                               trigger_id: str, owner_id: str = '',
+                               summary_model=None) -> list:
+    """Build LangChain message history from the board stream.
+
+    Uses a living summary approach:
+    - If history <= HISTORY_MAX messages: pass all as-is (with any stored summary)
+    - If history > HISTORY_MAX: summarize older messages, keep last
+      HISTORY_KEEP_RECENT interaction pairs, store the new summary in Redis
+
+    Returns a list of HumanMessage/AIMessage/SystemMessage objects.
+    """
+    messages = _read_board_messages(board_redis, board_stream, self_id, trigger_id, owner_id)
+
+    if not messages:
+        return []
+
+    summary_key = f"fuzzyclaw:fuzzy:summary:{owner_id or 'default'}"
+    existing_summary = ''
+    try:
+        existing_summary = board_redis.get(summary_key) or ''
+    except Exception:
+        pass
+
+    history = []
+
+    if len(messages) <= HISTORY_MAX:
+        # Within window — prepend existing summary if any, then all messages
+        if existing_summary:
+            history.append(SystemMessage(
+                content=f"[Summary of earlier conversation]\n{existing_summary}"
+            ))
+        for msg in messages:
+            if msg['role'] == 'human':
+                history.append(HumanMessage(content=msg['content']))
+            else:
+                history.append(AIMessage(content=msg['content']))
+    else:
+        # Over window — summarize older, keep recent
+        keep_count = HISTORY_KEEP_RECENT * 2  # pairs (human + assistant)
+        recent = messages[-keep_count:]
+        older = messages[:-keep_count]
+
+        if summary_model and older:
+            new_summary = _summarize_messages(older, existing_summary, summary_model)
+            try:
+                board_redis.set(summary_key, new_summary)
+                logger.info("Living summary updated (%d chars)", len(new_summary))
+            except Exception:
+                pass
+        else:
+            new_summary = existing_summary
+
+        if new_summary:
+            history.append(SystemMessage(
+                content=f"[Summary of earlier conversation]\n{new_summary}"
+            ))
+        for msg in recent:
+            if msg['role'] == 'human':
+                history.append(HumanMessage(content=msg['content']))
+            else:
+                history.append(AIMessage(content=msg['content']))
+
+    return history
+
+
+# ---------------------------------------------------------------------------
 # Single conversation handler
 # ---------------------------------------------------------------------------
 
 def handle_message(agent_def: dict, model, base_tools: list, board_redis,
                    self_id: str, board_stream: str, owner_id: str,
-                   message_content: str, sender: str, trigger_id: str):
+                   message_content: str, sender: str, trigger_id: str,
+                   summary_model=None):
     """Handle one user message: build agent, invoke, post response."""
     logger.info("Handling message from '%s': %s", sender, message_content[:100])
 
@@ -174,7 +330,11 @@ def handle_message(agent_def: dict, model, base_tools: list, board_redis,
 
     # Set up board tools scoped to this conversation, starting after the
     # triggering message so the agent doesn't re-read it
-    board = setup_message_board(board_redis, self_id, board_stream, initial_position=trigger_id)
+    board = setup_message_board(
+        board_redis, self_id, board_stream,
+        initial_position=trigger_id,
+        extra_fields={'user_id': owner_id} if owner_id else None,
+    )
 
     board_prompt = board.prompt_section if board else ''
     system_prompt = build_system_prompt(agent_def, board_prompt)
@@ -211,8 +371,15 @@ def handle_message(agent_def: dict, model, base_tools: list, board_redis,
             middleware=middleware,
         )
 
+        # Build conversation history from the board stream
+        history = build_conversation_history(
+            board_redis, board_stream, self_id, trigger_id,
+            owner_id=owner_id, summary_model=summary_model,
+        )
+        logger.info("Conversation history: %d messages", len(history))
+
         result = agent.invoke(
-            {"messages": [HumanMessage(content=message_content)]},
+            {"messages": history + [HumanMessage(content=message_content)]},
         )
         content = result["messages"][-1].content
         # Content may be a list of blocks (e.g. from tool-call responses) —
@@ -259,6 +426,7 @@ def handle_message(agent_def: dict, model, base_tools: list, board_redis,
                 'to': sender,
                 'content': response,
                 'ts': datetime.now(timezone.utc).isoformat(),
+                'user_id': owner_id,
             })
             logger.info("Posted response to '%s' (%d chars)", sender, len(response))
         except Exception as e:
@@ -281,18 +449,25 @@ def main():
     agent_file = os.environ.get('AGENT_FILE', '/app/agent.md')
     self_id = os.environ.get('SELF_ID', 'fuzzy')
     board_stream = os.environ.get('BOARD_STREAM', 'fuzzy')
-    owner_id = os.environ.get('OWNER_ID', '')
+    default_owner_id = os.environ.get('OWNER_ID', '')
     stream_key = f"fuzzyclaw:board:{board_stream}"
 
-    if not owner_id:
-        logger.error("OWNER_ID env var is required — fuzzy needs a user context")
-        sys.exit(1)
+    if not default_owner_id:
+        logger.info("OWNER_ID not set — will derive owner from each message's user_id field")
 
     logger.info("Starting fuzzy from %s", agent_file)
     agent_def = parse_agent_file(agent_file)
     logger.info("Agent: %s (model: %s)", agent_def['name'], agent_def['model_choice'])
 
     model = get_model(agent_def['model_choice'])
+
+    # Cheap model for living summary (conversation history compression)
+    summary_model = None
+    try:
+        summary_model = get_model(SUMMARY_MODEL)
+        logger.info("Summary model: %s (for conversation history)", SUMMARY_MODEL)
+    except Exception as e:
+        logger.warning("Summary model '%s' unavailable: %s — summaries disabled", SUMMARY_MODEL, e)
 
     # Warn if platform_query tools are listed but no API token is configured
     if 'platform_query' in agent_def['tools'] and not os.environ.get('API_TOKEN'):
@@ -359,7 +534,14 @@ def main():
                 if not content:
                     continue
 
-                logger.info("Wake-up: message from '%s' (id: %s)", sender, entry_id)
+                # Derive owner_id from message's user_id field, fall back to env var
+                user_id = data.get('user_id', '')
+                owner_id = user_id or default_owner_id
+                if not owner_id:
+                    logger.warning("No user_id in message and no OWNER_ID fallback — skipping")
+                    continue
+
+                logger.info("Wake-up: message from '%s' (user_id=%s, id: %s)", sender, owner_id, entry_id)
                 handle_message(
                     agent_def=agent_def,
                     model=model,
@@ -371,6 +553,7 @@ def main():
                     message_content=content,
                     sender=sender,
                     trigger_id=entry_id,
+                    summary_model=summary_model,
                 )
                 logger.info("Back to idle.")
 

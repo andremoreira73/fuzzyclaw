@@ -73,6 +73,12 @@ class BriefingViewSet(viewsets.ModelViewSet):
     ordering_fields = ['created_at', 'updated_at', 'title']
 
     def get_queryset(self):
+        # Staff users (service accounts) can filter by owner for multi-user access
+        if self.request.user.is_staff:
+            owner = self.request.query_params.get('owner')
+            if owner:
+                return Briefing.objects.filter(owner_id=owner)
+            return Briefing.objects.all()
         return Briefing.objects.filter(owner=self.request.user)
 
     def perform_create(self, serializer):
@@ -107,11 +113,13 @@ class RunViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['created_at', 'started_at', 'completed_at']
 
     def get_queryset(self):
-        return (
-            Run.objects.filter(briefing__owner=self.request.user)
-            .select_related('briefing')
-            .prefetch_related('agent_runs')
-        )
+        qs = Run.objects.select_related('briefing').prefetch_related('agent_runs')
+        if self.request.user.is_staff:
+            owner = self.request.query_params.get('owner')
+            if owner:
+                return qs.filter(briefing__owner_id=owner)
+            return qs
+        return qs.filter(briefing__owner=self.request.user)
 
     @action(detail=False, methods=['get'])
     def pending(self, request):
@@ -207,10 +215,13 @@ class AgentRunViewSet(viewsets.ReadOnlyModelViewSet):
     ordering_fields = ['created_at', 'started_at', 'completed_at']
 
     def get_queryset(self):
-        return (
-            AgentRun.objects.filter(run__briefing__owner=self.request.user)
-            .select_related('run')
-        )
+        qs = AgentRun.objects.select_related('run')
+        if self.request.user.is_staff:
+            owner = self.request.query_params.get('owner')
+            if owner:
+                return qs.filter(run__briefing__owner_id=owner)
+            return qs
+        return qs.filter(run__briefing__owner=self.request.user)
 
     @action(detail=True, methods=['patch'])
     def notes(self, request, pk=None):

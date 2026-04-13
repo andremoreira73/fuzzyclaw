@@ -330,17 +330,9 @@ _board_pool = redis_lib.ConnectionPool.from_url(
     settings.FUZZYCLAW_REDIS_URL, decode_responses=True,
 )
 
-# Fuzzy board constants — permanent assistant stream
+# Fuzzy board constants — permanent assistant stream (single stream, multi-user via user_id field)
 FUZZY_STREAM_KEY = 'fuzzyclaw:board:fuzzy'
 FUZZY_PARTICIPANTS_KEY = 'fuzzyclaw:board:fuzzy:participants'
-# Phase 1: single-user — fuzzy's OWNER_ID is hardcoded to 1 in docker-compose.
-# Multi-user will use per-user streams: fuzzyclaw:board:fuzzy:{owner_id}
-FUZZY_OWNER_ID = 1
-
-
-def _check_fuzzy_access(request):
-    """Return True if the requesting user owns the fuzzy instance."""
-    return request.user.id == FUZZY_OWNER_ID
 
 
 def _get_board_redis():
@@ -524,11 +516,9 @@ def board_participants(request, run_pk):
 def board_active_runs(request):
     """JSON endpoint: return list of runs with board messages (for run selector).
 
-    Includes fuzzy as the first entry for its owner (permanent assistant stream).
+    Includes fuzzy as the first entry for all authenticated users.
     """
-    data = []
-    if _check_fuzzy_access(request):
-        data.append({'id': 'fuzzy', 'title': 'Fuzzy Assistant'})
+    data = [{'id': 'fuzzy', 'title': 'Fuzzy Assistant'}]
     try:
         r = _get_board_redis()
         recent_runs = (
@@ -554,8 +544,6 @@ def board_active_runs(request):
 @login_required
 def fuzzy_status(request):
     """JSON endpoint: return fuzzy's current status (thinking or idle)."""
-    if not _check_fuzzy_access(request):
-        return JsonResponse({'status': 'idle'})
     try:
         r = _get_board_redis()
         status = r.get('fuzzyclaw:fuzzy:status')
@@ -569,18 +557,23 @@ def fuzzy_board_messages(request):
     """HTMX endpoint: return fuzzy board messages as HTML partial.
 
     Same format as run board messages, but reads from the permanent fuzzy stream.
+    Filters by user_id so each user only sees their own conversation.
     """
-    if not _check_fuzzy_access(request):
-        return HttpResponse("Not authorized.", status=403)
-
     filter_mode = request.GET.get('filter', 'all')
+    user_id = str(request.user.id)
 
     board_messages_list = []
     try:
         r = _get_board_redis()
-        entries = list(reversed(r.xrevrange(FUZZY_STREAM_KEY, count=200)))
+        entries = list(reversed(r.xrevrange(FUZZY_STREAM_KEY, count=500)))
 
         for entry_id, data in entries:
+            # Filter by user_id — each user sees only their conversation.
+            # Messages without user_id (pre-migration) are hidden from everyone.
+            msg_user_id = data.get('user_id', '')
+            if msg_user_id != user_id:
+                continue
+
             sender = data.get('from', '')
             recipient = data.get('to', '')
 
@@ -612,9 +605,6 @@ def fuzzy_board_reply(request):
 
     POST body: message (text, @mentions optional but defaults to @fuzzy).
     """
-    if not _check_fuzzy_access(request):
-        return HttpResponse("Not authorized.", status=403)
-
     raw_message = request.POST.get('message', '').strip()
     if not raw_message:
         return HttpResponse(status=400)
@@ -637,6 +627,7 @@ def fuzzy_board_reply(request):
                 'to': recipient,
                 'content': content,
                 'ts': ts,
+                'user_id': str(request.user.id),
             })
     except Exception as e:
         logger.warning("fuzzy_board_reply: Redis write failed: %s", e)
@@ -651,9 +642,6 @@ def fuzzy_board_reply(request):
 @login_required
 def fuzzy_board_participants(request):
     """HTMX endpoint: return participant list for fuzzy's board."""
-    if not _check_fuzzy_access(request):
-        return HttpResponse("Not authorized.", status=403)
-
     enriched = []
     try:
         r = _get_board_redis()

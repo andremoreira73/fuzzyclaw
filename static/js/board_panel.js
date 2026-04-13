@@ -12,6 +12,7 @@ document.addEventListener('alpine:init', () => {
     messageInput: '',
     sendError: '',
     showAutocomplete: false,
+    fuzzyThinking: false,
     // Drag state
     isDragging: false,
     dragX: null,
@@ -26,6 +27,7 @@ document.addEventListener('alpine:init', () => {
     _feedInterval: null,
     _runsInterval: null,
     _badgeInterval: null,
+    _fuzzyStatusInterval: null,
 
     init() {
       const pos = JSON.parse(localStorage.getItem('boardPanelPos') || 'null');
@@ -66,12 +68,33 @@ document.addEventListener('alpine:init', () => {
     onPanelOpen() {
       this.loadRuns();
       this._runsInterval = setInterval(() => this.loadRuns(), 10000);
+      this._fuzzyStatusInterval = setInterval(() => this.pollFuzzyStatus(), 2000);
+      this.pollFuzzyStatus();
       if (this.currentRunId) this.startFeedPolling();
     },
 
     onPanelClose() {
       this.stopFeedPolling();
       if (this._runsInterval) { clearInterval(this._runsInterval); this._runsInterval = null; }
+      if (this._fuzzyStatusInterval) { clearInterval(this._fuzzyStatusInterval); this._fuzzyStatusInterval = null; }
+    },
+
+    pollFuzzyStatus() {
+      fetch('/board/fuzzy/status/')
+        .then(r => r.json())
+        .then(data => {
+          const was = this.fuzzyThinking;
+          this.fuzzyThinking = data.status === 'thinking';
+          // Update the selector label when status changes
+          if (was !== this.fuzzyThinking) {
+            const select = document.getElementById('board-run-select');
+            if (select) {
+              const opt = [...select.options].find(o => o.value === 'fuzzy');
+              if (opt) opt.textContent = (this.fuzzyThinking ? '\u25CF ' : '') + 'Fuzzy Assistant';
+            }
+          }
+        })
+        .catch(() => { this.fuzzyThinking = false; });
     },
 
     startFeedPolling() {
@@ -103,7 +126,9 @@ document.addEventListener('alpine:init', () => {
           runs.forEach(r => {
             const opt = document.createElement('option');
             opt.value = r.id;
-            opt.textContent = 'Run #' + r.id + ': ' + r.title;
+            // 'fuzzy' is a sentinel string, not a run ID
+            const label = r.id === 'fuzzy' ? r.title : 'Run #' + r.id + ': ' + r.title;
+            opt.textContent = (r.id === 'fuzzy' && this.fuzzyThinking ? '\u25CF ' : '') + label;
             select.appendChild(opt);
           });
           // Keep previous selection if still valid, else pick first
@@ -119,9 +144,15 @@ document.addEventListener('alpine:init', () => {
         .catch(err => console.warn('Board runs fetch failed:', err));
     },
 
+    _boardUrl(suffix) {
+      // Route to fuzzy-specific endpoints when fuzzy is selected
+      if (this.currentRunId === 'fuzzy') return '/board/fuzzy/' + suffix;
+      return '/runs/' + this.currentRunId + '/board/' + suffix;
+    },
+
     loadFeed() {
       if (!this.currentRunId) return;
-      const url = '/runs/' + this.currentRunId + '/board/?filter=' + this.filterMode;
+      const url = this._boardUrl('?filter=' + this.filterMode);
       htmx.ajax('GET', url, {target: '#board-feed', swap: 'innerHTML'}).then(() => {
         const feed = document.getElementById('board-feed');
         if (feed) feed.scrollTop = feed.scrollHeight;
@@ -193,19 +224,43 @@ document.addEventListener('alpine:init', () => {
     },
 
     // --- Messaging ---
+    _acIndex: -1,
+
     onInput() {
       const val = this.messageInput;
       if (val.startsWith('@') && !val.includes(' ') && this.currentRunId) {
         this.showAutocomplete = true;
-        fetch('/runs/' + this.currentRunId + '/board/participants/')
+        this._acIndex = -1;
+        const query = val.slice(1).toLowerCase();
+        fetch(this._boardUrl('participants/'))
           .then(r => r.text())
           .then(html => {
             const el = document.getElementById('board-autocomplete');
-            if (el) el.innerHTML = html;
+            if (!el) return;
+            el.innerHTML = html;
+            // Filter by typed prefix
+            if (query) {
+              el.querySelectorAll('button[data-id]').forEach(btn => {
+                const id = btn.dataset.id.toLowerCase();
+                if (!id.startsWith(query) && id !== 'all') btn.style.display = 'none';
+              });
+            }
           });
       } else {
         this.showAutocomplete = false;
       }
+    },
+
+    onAutocompleteKey(e) {
+      if (!this.showAutocomplete) return;
+      const btns = [...(document.querySelectorAll('#board-autocomplete button[data-id]') || [])].filter(b => b.style.display !== 'none');
+      if (!btns.length) return;
+      if (e.key === 'ArrowDown') { e.preventDefault(); this._acIndex = Math.min(this._acIndex + 1, btns.length - 1); }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); this._acIndex = Math.max(this._acIndex - 1, 0); }
+      else if (e.key === 'Enter' && this._acIndex >= 0) { e.preventDefault(); this.insertMention(btns[this._acIndex].dataset.id); return; }
+      else if (e.key === 'Tab') { e.preventDefault(); this.insertMention(btns[Math.max(0, this._acIndex)].dataset.id); return; }
+      else return;
+      btns.forEach((b, i) => b.classList.toggle('bg-indigo-50', i === this._acIndex));
     },
 
     insertMention(id) {
@@ -220,7 +275,7 @@ document.addEventListener('alpine:init', () => {
       const csrf = document.querySelector('body')?.getAttribute('data-csrf')
                 || (document.cookie.match(/csrftoken=([^;]+)/) || [])[1]
                 || '';
-      fetch('/runs/' + this.currentRunId + '/board/reply/', {
+      fetch(this._boardUrl('reply/'), {
         method: 'POST',
         headers: {'Content-Type': 'application/x-www-form-urlencoded', 'X-CSRFToken': csrf},
         body: 'message=' + encodeURIComponent(msg),

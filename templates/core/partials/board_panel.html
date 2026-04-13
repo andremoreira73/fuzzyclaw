@@ -77,6 +77,17 @@ Alpine.js component (boardPanel) registered in base.html <head>.
       </div>
     </div>
 
+    {# ── Fuzzy typing indicator ── #}
+    <div x-show="fuzzyThinking && currentRunId === 'fuzzy'" x-cloak
+         class="px-4 py-2 bg-gray-100 border-t border-gray-200 flex items-center space-x-2">
+      <span class="flex space-x-1">
+        <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce" style="animation-delay: 0s"></span>
+        <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce" style="animation-delay: 0.15s"></span>
+        <span class="w-1.5 h-1.5 bg-green-500 rounded-full animate-bounce" style="animation-delay: 0.3s"></span>
+      </span>
+      <span class="text-xs text-gray-500">fuzzy is thinking...</span>
+    </div>
+
     {# ── Autocomplete dropdown ── #}
     <div x-show="showAutocomplete" @click.outside="showAutocomplete = false"
          id="board-autocomplete"
@@ -92,7 +103,7 @@ Alpine.js component (boardPanel) registered in base.html <head>.
           <input type="text"
                  x-model="messageInput"
                  @input="onInput()"
-                 @keydown.tab.prevent="insertMention(document.querySelector('#board-autocomplete button')?.dataset?.id || 'all')"
+                 @keydown="onAutocompleteKey($event)"
                  placeholder="@agent_name message..."
                  class="w-full px-3 py-2 text-sm border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 font-mono"
                  :class="sendError ? 'border-red-400' : ''"

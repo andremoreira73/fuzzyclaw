@@ -2398,12 +2398,16 @@ class BoardViewTests(TestCase):
         mock_r.xlen.return_value = 5  # stream has messages
         mock_get_redis.return_value = mock_r
 
-        resp = self.client.get('/board/active-runs/')
+        with patch('core.views.FUZZY_OWNER_ID', self.user.id):
+            resp = self.client.get('/board/active-runs/')
         self.assertEqual(resp.status_code, 200)
         data = json.loads(resp.content)
-        self.assertEqual(len(data), 1)
-        self.assertEqual(data[0]['id'], self.run.id)
-        self.assertEqual(data[0]['title'], 'Board Test')
+        # First entry is always fuzzy, then run boards with messages
+        self.assertEqual(data[0]['id'], 'fuzzy')
+        self.assertEqual(data[0]['title'], 'Fuzzy Assistant')
+        self.assertEqual(len(data), 2)
+        self.assertEqual(data[1]['id'], self.run.id)
+        self.assertEqual(data[1]['title'], 'Board Test')
 
     @patch('core.views._get_board_redis')
     def test_board_active_runs_excludes_empty_streams(self, mock_get_redis):
@@ -2413,9 +2417,12 @@ class BoardViewTests(TestCase):
         mock_r.xlen.return_value = 0
         mock_get_redis.return_value = mock_r
 
-        resp = self.client.get('/board/active-runs/')
+        with patch('core.views.FUZZY_OWNER_ID', self.user.id):
+            resp = self.client.get('/board/active-runs/')
         data = json.loads(resp.content)
-        self.assertEqual(data, [])
+        # Only fuzzy remains when no run streams have messages
+        self.assertEqual(len(data), 1)
+        self.assertEqual(data[0]['id'], 'fuzzy')
 
     @patch('core.views._get_board_redis')
     def test_board_participants(self, mock_get_redis):

@@ -100,6 +100,48 @@ services:
         condition: service_started
     environment: *shared-env
 
+  fuzzy:
+    build:
+      context: .
+      dockerfile: Dockerfile.fuzzy
+    container_name: fuzzyclaw-fuzzy
+    restart: unless-stopped
+    volumes:
+      - ./skills:/app/skills:ro
+      - ./agents/fuzzy.md:/app/agent.md:ro
+      - ./data/users/1:/app/data:rw
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      - AGENT_FILE=/app/agent.md
+      - SELF_ID=fuzzy
+      - BOARD_STREAM=fuzzy
+      - OWNER_ID=1
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_dev}
+      - REDIS_URL=redis://redis:6379/1
+      - API_BASE_URL=http://web:8200/api
+      - API_TOKEN=${FUZZYCLAW_FUZZY_API_TOKEN:-}
+      - MODEL_DEFAULTS={"temperature":1,"reasoning_effort":"high","use_responses_api":true}
+      - AGENT_VOLUMES=[{"mount":"/app/data","mode":"rw"}]
+      - PYTHONUNBUFFERED=1
+      # LLM API Keys
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Web scraping
+      - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
+      - SCRAPE_MAX_TOKENS=${SCRAPE_MAX_TOKENS:-80000}
+      # LangSmith (optional)
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fuzzyclaw}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
+
 volumes:
   postgres_data:
 

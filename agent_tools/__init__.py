@@ -81,10 +81,18 @@ def build_tools(tool_names: list[str]) -> list:
     available['web_scrape'] = web_scrape
     available['web_search'] = web_search
 
+    # Tool bundles — a single frontmatter name that expands to multiple tools
+    bundles = {}
+    if 'platform_query' in tool_names:
+        from .platform_query import build_platform_query_tools
+        bundles['platform_query'] = build_platform_query_tools()
+
     resolved = []
     for name in tool_names:
         if name in available:
             resolved.append(available[name])
+        elif name in bundles:
+            resolved.extend(bundles[name])
         else:
             logger.warning("Unknown tool '%s' — skipping.", name)
     return resolved

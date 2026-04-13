@@ -6,10 +6,8 @@ ENV PYTHONUNBUFFERED=1
 
 WORKDIR /app
 
-# System dependencies (gcc for psycopg binary build)
-RUN apt-get update && apt-get install -y gcc && rm -rf /var/lib/apt/lists/*
-
 # Python dependencies — minimal agent set, no Django
+# psycopg[binary] ships pre-built wheels, no gcc needed
 COPY requirements-agent.txt .
 RUN pip install --no-cache-dir -r requirements-agent.txt
 

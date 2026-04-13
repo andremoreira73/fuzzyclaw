@@ -170,6 +170,8 @@ def make_check_reports(run):
         """Check which specialists still need attention for the current run.
         Blocks up to wait_seconds (max 120) for new completions via Redis Streams,
         then returns only agents that haven't been read yet (status='running' in DB).
+        Also monitors the message board — returns early if a board message arrives
+        so you can read it promptly.
 
         Already-read reports and dispatch failures are excluded to keep payloads small.
         Includes a progress summary line.
@@ -189,29 +191,46 @@ def make_check_reports(run):
         agent_timeout = getattr(django_settings, 'FUZZYCLAW_AGENT_TIMEOUT', 600)
         hitl_timeout = getattr(django_settings, 'FUZZYCLAW_HITL_TIMEOUT', 1800)
 
-        # Try Redis Streams first for instant notification
+        # Try Redis Streams first for instant notification.
+        # Watch BOTH the completion stream AND the board stream so the
+        # coordinator wakes up immediately when a board message arrives.
         r = _get_redis_client()
         stream_key = f"fuzzyclaw:run:{run_id}:done"
+        board_key = f"fuzzyclaw:board:{run_id}"
 
         if r:
             try:
-                # Block-wait for completion signals, accumulating all that arrive
-                # before the deadline. '$' = only new entries (not replaying old ones).
                 deadline = time.time() + nonlocal_wait
-                last_id = '$'
+                done_last_id = '$'
+                board_last_id = '$'
                 running_count = AgentRun.objects.filter(run_id=run_id, status='running').count()
                 signals_received = 0
-                while time.time() < deadline and signals_received < running_count:
+                board_wakeup = False
+                while time.time() < deadline and signals_received < running_count and not board_wakeup:
                     remaining_ms = max(100, int((deadline - time.time()) * 1000))
                     streams = r.xread(
-                        {stream_key: last_id},
+                        {stream_key: done_last_id, board_key: board_last_id},
                         block=remaining_ms,
                         count=100,
                     )
                     if streams:
-                        entries = streams[0][1]
-                        signals_received += len(entries)
-                        last_id = entries[-1][0]  # track last seen ID
+                        coordinator_id = f"coordinator_{run_id}"
+                        for s_key, entries in streams:
+                            # Redis client may return bytes or str keys
+                            key_str = s_key.decode() if isinstance(s_key, bytes) else s_key
+                            if key_str == stream_key:
+                                signals_received += len(entries)
+                                done_last_id = entries[-1][0]
+                            elif key_str == board_key:
+                                board_last_id = entries[-1][0]
+                                # Only wake up for messages addressed to coordinator or 'all'
+                                for _, data in entries:
+                                    to = data.get(b'to', data.get('to', ''))
+                                    if isinstance(to, bytes):
+                                        to = to.decode()
+                                    if to in (coordinator_id, 'all', 'human'):
+                                        board_wakeup = True
+                                        break
             except Exception as e:
                 logger.warning("Redis XREAD failed (falling back to filesystem): %s", e)
 

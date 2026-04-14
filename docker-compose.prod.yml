@@ -63,7 +63,7 @@ services:
     group_add:
       - "${DOCKER_GID:?DOCKER_GID must be set in .env}"
     ports:
-      - "8200:8200"
+      - "127.0.0.1:8200:8200"
     depends_on:
       db:
         condition: service_healthy

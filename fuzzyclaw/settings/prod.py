@@ -24,10 +24,15 @@ CSRF_TRUSTED_ORIGINS = [
     if origin.strip()
 ]
 
-# input.css contains @import "tailwindcss" which WhiteNoise's manifest
-# storage tries to resolve as a file reference. It's a Tailwind CLI source
-# file, not a served asset — safe to ignore.
-WHITENOISE_MANIFEST_STRICT = False
+# Use basic static storage in prod. WhiteNoise's CompressedManifestStaticFilesStorage
+# parses CSS @import statements during collectstatic and chokes on Tailwind's
+# @import "tailwindcss" in input.css. Nginx serves static files directly in
+# production, so WhiteNoise compression/manifest isn't needed.
+STORAGES = {
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+}
 
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True

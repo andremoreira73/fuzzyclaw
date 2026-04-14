@@ -1,0 +1,154 @@
+x-shared-env: &shared-env
+  - DJANGO_SETTINGS_MODULE=${DJANGO_SETTINGS_MODULE:-fuzzyclaw.settings.prod}
+  - DB_HOST=db
+  - DB_PASSWORD=${DB_PASSWORD}
+  - POSTGRES_DB=${POSTGRES_DB:-fuzzyclaw_prod}
+  - POSTGRES_USER=${POSTGRES_USER:-fuzzyclawuser}
+  - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_prod}
+  - DJANGO_SECRET_KEY=${DJANGO_SECRET_KEY}
+  - ALLOWED_HOSTS=${ALLOWED_HOSTS}
+  - CSRF_TRUSTED_ORIGINS=${CSRF_TRUSTED_ORIGINS}
+  - PYTHONUNBUFFERED=1
+  - CELERY_BROKER_URL=redis://redis:6379/0
+  - CELERY_RESULT_BACKEND=redis://redis:6379/0
+  # API Keys
+  - OPENAI_API_KEY=${OPENAI_API_KEY}
+  - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+  - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+  - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
+  - SCRAPE_MAX_TOKENS=${SCRAPE_MAX_TOKENS:-80000}
+  # Container orchestration
+  - HOST_PROJECT_DIR=${PWD}
+  # Redis Streams (db=1, separate from Celery broker on db=0)
+  - FUZZYCLAW_REDIS_URL=redis://redis:6379/1
+  # LangSmith (optional)
+  - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+  - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+  - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fuzzyclaw}
+  - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-fuzzyclaw_prod}
+      POSTGRES_USER: ${POSTGRES_USER:-fuzzyclawuser}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-fuzzyclawuser} -d ${POSTGRES_DB:-fuzzyclaw_prod}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build: .
+    command: bash -c "python manage.py collectstatic --noinput && python manage.py migrate && uvicorn fuzzyclaw.asgi:application --host 0.0.0.0 --port 8200 --workers 2"
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be set in .env}"
+    ports:
+      - "8200:8200"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: *shared-env
+    restart: unless-stopped
+
+  celery:
+    build: .
+    command: celery -A fuzzyclaw worker -l info
+    volumes:
+      - .:/app
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:?DOCKER_GID must be set in .env}"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment: *shared-env
+    restart: unless-stopped
+
+  celery-beat:
+    build: .
+    command: bash -c "sleep 10 && celery -A fuzzyclaw beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment: *shared-env
+    restart: unless-stopped
+
+  fuzzy:
+    build:
+      context: .
+      dockerfile: Dockerfile.fuzzy
+    container_name: fuzzyclaw-fuzzy
+    restart: unless-stopped
+    volumes:
+      - ./skills:/app/skills:ro
+      - ./agents/fuzzy.md:/app/agent.md:ro
+      - ./data:/app/data:rw
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    environment:
+      - AGENT_FILE=/app/agent.md
+      - SELF_ID=fuzzy
+      - BOARD_STREAM=fuzzy
+      - OWNER_ID=${FUZZYCLAW_FUZZY_OWNER_ID:-}
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-fuzzyclawuser}:${DB_PASSWORD}@db:5432/${POSTGRES_DB:-fuzzyclaw_prod}
+      - REDIS_URL=redis://redis:6379/1
+      - API_BASE_URL=http://web:8200/api
+      - API_TOKEN=${FUZZYCLAW_FUZZY_API_TOKEN:-}
+      - MODEL_DEFAULTS={"temperature":1,"reasoning_effort":"high","use_responses_api":true}
+      - AGENT_VOLUMES=[{"mount":"/app/data","mode":"rw"}]
+      - FUZZY_HISTORY_MAX=15
+      - FUZZY_HISTORY_KEEP_RECENT=3
+      - FUZZY_SUMMARY_MODEL=gemini-2.5-flash
+      - PYTHONUNBUFFERED=1
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - SCRAPINGBEE_API_KEY=${SCRAPINGBEE_API_KEY}
+      - SCRAPE_MAX_TOKENS=${SCRAPE_MAX_TOKENS:-80000}
+      - LANGCHAIN_TRACING_V2=${LANGCHAIN_TRACING_V2:-false}
+      - LANGCHAIN_API_KEY=${LANGCHAIN_API_KEY}
+      - LANGCHAIN_PROJECT=${LANGCHAIN_PROJECT:-fuzzyclaw}
+      - LANGSMITH_ENDPOINT=${LANGSMITH_ENDPOINT:-}
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  default:
+    name: fuzzyclaw_default

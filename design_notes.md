@@ -106,6 +106,10 @@ Full plan: `code_reviews/fuzzy-always-on-assistant.md`.
 
 `Run` and `AgentRun` are exposed as `ReadOnlyModelViewSet`. The coordinator uses the ORM directly via `agent_tools.py`, never the REST API — so API-level mutation of execution fields (`status`, `report`, `raw_data`, timestamps) was pure attack surface with no operational benefit. User annotations go in `user_notes` (migration 0003). Runs are launched via `POST /api/briefings/{id}/launch/` and cancelled via `POST /api/runs/{id}/cancel/`.
 
+### Fuzzy filesystem: shared in multi-user mode (2026-04-14)
+
+Fuzzy runs as a single shared container with `./data:/app/data:rw`. In multi-user setups, all users' files under `data/users/` are visible to fuzzy (and thus to any user via bash). Accepted trade-off — bash is too valuable to remove, and reliably sandboxing shell path access in a shared container adds more complexity than it's worth. Memory, platform queries, and board messages remain properly scoped per-user. For full filesystem isolation, deploy one fuzzy container per user (single-user mode with `OWNER_ID` set).
+
 ### Code review hardening (2026-03-25, 3 rounds)
 
 Cross-model review by GPT-5.4 Codex + Claude Opus. All fixes landed. Full findings in `code_reviews/`. Key areas: cross-user API scoping, XSS sanitization, symlink bypass in volume validation, container slot leak, base image hashing, agent error handling, board reliability. 174 tests passing.

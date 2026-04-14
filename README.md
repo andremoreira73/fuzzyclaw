@@ -250,7 +250,7 @@ docker compose exec web python manage.py createsuperuser
 open http://localhost:8200
 ```
 
-#### VM / Production Deployment
+### VM / Production Deployment
 
 We created a skill that walks through the full deployment step by step — from a bare Linux VM to a running production instance with HTTPS. See [`VM_installation/`](VM_installation/).
 

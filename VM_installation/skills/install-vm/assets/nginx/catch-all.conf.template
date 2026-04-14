@@ -1,0 +1,15 @@
+# Reject requests that don't match the domain (e.g. direct IP access)
+# Returns 444 — nginx closes the connection without a response.
+
+server {
+    listen 80 default_server;
+    listen 443 ssl default_server;
+    server_name _;
+
+    # Reuse the domain's cert so nginx can terminate the TLS handshake
+    # before dropping the connection. Without a cert, nginx can't listen on 443.
+    ssl_certificate /etc/letsencrypt/live/{{DOMAIN}}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/{{DOMAIN}}/privkey.pem;
+
+    return 444;
+}

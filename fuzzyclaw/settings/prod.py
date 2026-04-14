@@ -24,6 +24,11 @@ CSRF_TRUSTED_ORIGINS = [
     if origin.strip()
 ]
 
+# input.css contains @import "tailwindcss" which WhiteNoise's manifest
+# storage tries to resolve as a file reference. It's a Tailwind CLI source
+# file, not a served asset — safe to ignore.
+WHITENOISE_MANIFEST_STRICT = False
+
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
 SESSION_COOKIE_SECURE = True

@@ -313,7 +313,7 @@ Recently shipped:
 - **Fuzzy** — always-on platform assistant with conversational memory and platform awareness
 - **File Manager** — browse, upload, and manage agent data files from the dashboard
 - **Briefing-scoped memories** — agents remember per briefing, not globally
-- **Multi-user fuzzy** — one container, per-user memory and conversation isolation
+- **Multi-user fuzzy** — one container, per-user memory and conversation isolation. Note: the shared fuzzy container has access to all users' files under `data/users/`. Memory, platform queries, and board messages are scoped per-user, but filesystem visibility is shared. For full file isolation, deploy one fuzzy container per user.
 
 ## Contributing
 

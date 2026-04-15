@@ -106,7 +106,6 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.fuzzy
-    container_name: fuzzyclaw-fuzzy
     restart: unless-stopped
     volumes:
       - ./skills:/app/skills:ro

@@ -235,11 +235,17 @@ stat -c '%g' /var/run/docker.sock   # → set DOCKER_GID in .env to this value
 # Start the platform (PostgreSQL, Redis, web, Celery, Celery Beat)
 docker compose up -d
 
-# Build agent Docker images
-docker compose exec web python manage.py sync_images
+# Run database migrations
+docker compose exec web python manage.py migrate
+
+# Build the CSS (tailwind.css is not checked into git)
+./build_css.sh
 
 # Create your admin user
 docker compose exec web python manage.py createsuperuser
+
+# Build agent Docker images
+docker compose exec web python manage.py sync_images
 
 # Set up Fuzzy (the always-on assistant)
 # Create an API token: Admin > Auth Token > Tokens > Add (pick your user)

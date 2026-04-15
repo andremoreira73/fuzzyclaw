@@ -1,5 +1,7 @@
 # CLAUDE.md
 
+> **Guest agent?** Read `skills/guest-agent/SKILL.md` first — it explains how to register work and discover skills.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Project Overview

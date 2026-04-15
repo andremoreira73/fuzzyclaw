@@ -68,6 +68,7 @@ agents/*
 !agents/.gitkeep
 skills/*
 !skills/.gitkeep
+!skills/guest-agent/
 
 ###
 

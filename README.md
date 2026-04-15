@@ -163,6 +163,8 @@ The scraping tools use ScrapingBee because that's what we use. Swapping to Brows
 
 Write a natural language schedule in the briefing ("every weekday at 9am", "twice a month on the 1st and 15th at noon EST"). Click Schedule. A cheap LLM call parses it into a cron expression. Celery Beat fires the briefing automatically. The coordinator can also manage schedules programmatically via its `manage_schedule` tool — so your briefings can adapt their own frequency based on what the agents find.
 
+**Missed schedules:** If your machine was off when a task was due (common for laptop users), Celery Beat will notice on startup and fire the task once — regardless of how many intervals were missed. You won't lose scheduled work, and you won't get a backlog of duplicate runs. This is the default `django-celery-beat` behavior, no configuration needed.
+
 ### File Manager & Volume Scoping
 
 Agents run in isolated containers, but they often need to produce or read files. The `volumes` field in agent frontmatter uses scoped mounts:

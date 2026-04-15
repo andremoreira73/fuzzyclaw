@@ -24,9 +24,9 @@ db.sqlite3-journal
 # Tailwind build output (rebuilt from static/css/input.css)
 static/css/tailwind.css
 
-# User data (created at runtime, per-user isolation)
-data/users/
-data/runs/
+# User data (created at runtime — track directory via .gitkeep)
+data/*
+!data/.gitkeep
 
 # Environment
 .env
@@ -62,10 +62,15 @@ test.db
 my_notes.md
 design_notes_backup*.md
 
+# Agent and skill definitions (tracked base files update with pulls;
+# new local files are ignored — use `git add -f` for new examples)
+agents/*
+!agents/.gitkeep
+skills/*
+!skills/.gitkeep
+
 ###
 
 DESIGN_BRIEF.md
-skills/expenses
-skills/mbplusp-profile-generator
 code_reviews/
 

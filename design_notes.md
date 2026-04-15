@@ -182,6 +182,12 @@ Ideas:
 
 - **Auto-start on laptop boot** — Simplest path: add `restart: unless-stopped` to every service in `docker-compose.yml` and run `docker compose up -d` once. As long as Docker itself auto-starts, everything comes back. No systemd unit to maintain. Reach for a systemd user service (`~/.config/systemd/user/fuzzyclaw.service` with `After=docker.service`) only if you need explicit boot-time ordering or better logging.
 
+- **Latency investigation** — End-to-end run latency is noticeable. Need to profile where time goes: LangGraph/Deep Agents overhead, coordinator ReAct loop, container startup, model API calls, Redis polling intervals. Before optimizing, measure.
+
+- **Dockerfile hardening pass** — (1) Multi-stage builds: gcc, postgresql-client, and build tools currently stay in the final image for Dockerfile, Dockerfile.agent, and Dockerfile.fuzzy. A builder stage would shave these out. (2) `.dockerignore` is effectively empty (2 bytes) — should exclude `.git`, `venv`, `data/`, `node_modules`, `__pycache__`. (3) BuildKit cache mounts (`--mount=type=cache`) for pip would speed up rebuilds, especially on low-RAM VMs. (4) `docker-compose.prod.yml` uses unpinned tags for postgres and redis — should pin by digest like the dev compose does.
+
+- **VM deployment over HTTPS** — ~~Caddy sidecar~~ Done (2026-04-14): nginx + certbot, deployed to GCP VM. See `VM_installation/` skill and `docker-compose.prod.yml`.
+
 ### Memory & scoping overhaul (2026-04-13)
 
 Three changes shipped together: briefing-scoped specialist memories (`owner_id.agent_name.briefing_id` namespace via `BRIEFING_ID` env var), fuzzy conversational memory (board-history-as-context with living summary via Gemini Flash), and per-user fuzzy scoping (`user_id` in board messages, `?owner=` API filter for staff, dynamic `OWNER_ID`). Redis persistence added (`redis_data` volume) so board streams and summaries survive restarts. Old un-scoped memories wiped. Full plan: `code_reviews/fuzzy-memory-and-scoping.md`.

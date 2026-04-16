@@ -176,6 +176,12 @@ The **File Manager** in the dashboard lets users browse, upload, download, renam
 
 Agent memory is scoped to `(owner_id, agent_name, briefing_id)`, so the same agent running for different briefings keeps separate memories.
 
+### Guest Agents
+
+Not all work goes through the coordinator. If you use a coding agent harness (Claude Code, Codex, Pi, etc.) directly inside your FuzzyClaw directory, it can register its work so everything shows up on the same dashboard. The file `AGENTS.md` points the agent to what it needs to know to be a good guest (hint: there is a skill for it: `skills/guest-agent/SKILL.md`).
+
+This means FuzzyClaw becomes a unified log for all agent work — whether it was orchestrated by the coordinator, scheduled by Celery Beat, or done interactively with a harness.
+
 #### Security / Isolation Note
 
 **Multi-user note:** Specialist agents only see their owner's files (volume mounts are scoped per user). However, the **fuzzy** assistant runs as a single shared container with access to the entire `data/` directory. Memory, platform queries, and board messages are scoped per user, but filesystem visibility through fuzzy is shared across all users in a FuzzyClaw instance. For full file isolation, deploy one fuzzy container per user.
@@ -310,6 +316,17 @@ If you have Claude Code, you can point it at the install skill and say "deploy F
 ```bash
 source venv/bin/activate
 DATABASE_URL=sqlite:///test.db python manage.py test core
+```
+
+### LangSmith Tracing
+
+FuzzyClaw supports [LangSmith](https://smith.langchain.com/) for tracing — coordinator decisions, specialist agent runs, tool invocations, token usage, etc. To enable it, set these in your `.env`:
+
+```bash
+LANGCHAIN_API_KEY=your-langsmith-api-key
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=fuzzyclaw           # or any project name you prefer
+LANGSMITH_ENDPOINT="https://api.smith.langchain.com"  # or https://eu.api.smith.langchain.com for EU
 ```
 
 ## Project Structure

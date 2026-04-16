@@ -17,10 +17,10 @@ FuzzyClaw is the user's central control panel for all agent work. Some runs are 
 
 Three concepts matter:
 
-| Concept | What it is | Example |
-|---------|-----------|---------|
-| **Briefing** | A category or project that groups related runs | "Expenses Processing" |
-| **Run** | One execution under a briefing — a session's worth of work | "Processed April invoices" |
+| Concept      | What it is                                                   | Example                                                     |
+| ------------ | ------------------------------------------------------------ | ----------------------------------------------------------- |
+| **Briefing** | A category or project that groups related runs               | "Expenses Processing"                                       |
+| **Run**      | One execution under a briefing — a session's worth of work   | "Processed April invoices"                                  |
 | **AgentRun** | Your participation in that run — your name, report, and data | agent: `claude-code`, report: "5 invoices, total EUR 2,340" |
 
 A Briefing has many Runs. A Run has one or more AgentRuns. When you register work, you create a Run and an AgentRun under a Briefing.
@@ -43,20 +43,21 @@ Run this from the project root (`/home/memology/Documents/fuzzy-lyfx`).
 
 ### Arguments
 
-| Argument | Required | Description |
-|----------|----------|-------------|
-| `--briefing` | Yes | Briefing title. Auto-created if it doesn't exist yet. |
-| `--agent` | Yes | Your agent name (e.g. `claude-code`, `codex`, `gemini-cli`). Use a consistent name across sessions so the dashboard can track your history. |
-| `--report` | No | Inline report text. For longer reports, use `--report-file` instead. |
-| `--report-file` | No | Path to a file containing the report (useful for multi-paragraph reports). |
-| `--coordinator-report` | No | A short summary for the run level (shown in the run list). If omitted, the dashboard shows the agent report. |
-| `--raw-data` | No | JSON string with structured data. Use this for machine-readable results (totals, counts, file lists, etc.). |
-| `--user-notes` | No | Notes from the user (not from you). |
-| `--status` | No | `completed` (default) or `failed`. |
+| Argument               | Required | Description                                                                                                                                 |
+| ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--briefing`           | Yes      | Briefing title. Auto-created if it doesn't exist yet.                                                                                       |
+| `--agent`              | Yes      | Your agent name (e.g. `claude-code`, `codex`, `gemini-cli`). Use a consistent name across sessions so the dashboard can track your history. |
+| `--report`             | No       | Inline report text. For longer reports, use `--report-file` instead.                                                                        |
+| `--report-file`        | No       | Path to a file containing the report (useful for multi-paragraph reports).                                                                  |
+| `--coordinator-report` | No       | A short summary for the run level (shown in the run list). If omitted, the dashboard shows the agent report.                                |
+| `--raw-data`           | No       | JSON string with structured data. Use this for machine-readable results (totals, counts, file lists, etc.).                                 |
+| `--user-notes`         | No       | Notes from the user (not from you).                                                                                                         |
+| `--status`             | No       | `completed` (default) or `failed`.                                                                                                          |
 
 ### Examples
 
 Simple registration:
+
 ```bash
 docker compose exec web python manage.py register_run \
   --briefing "Expenses Processing" \
@@ -65,6 +66,7 @@ docker compose exec web python manage.py register_run \
 ```
 
 With structured data:
+
 ```bash
 docker compose exec web python manage.py register_run \
   --briefing "Expenses Processing" \
@@ -74,6 +76,7 @@ docker compose exec web python manage.py register_run \
 ```
 
 From a report file:
+
 ```bash
 docker compose exec web python manage.py register_run \
   --briefing "Market Research" \
@@ -99,14 +102,16 @@ Use the `raw_data` field for structured data that might be useful for filtering 
 
 ## Discovering skills
 
-FuzzyClaw skills live in the `skills/` directory. Each skill is a folder with a `SKILL.md` file that explains a specific workflow or domain.
+FuzzyClaw skills live in the `skills/` directory of the FuzzyClaw folder. Each skill is a folder with a `SKILL.md` file that explains a specific workflow or domain.
 
 To see what's available:
+
 ```bash
 ls skills/
 ```
 
 To read a skill:
+
 ```bash
 cat skills/<skill-name>/SKILL.md
 ```
@@ -117,4 +122,4 @@ Skills may also contain subdirectories with reference data, templates, or script
 
 ## Data directory
 
-User-specific data lives under `data/users/<user_id>/`. The current user's data is at `data/users/1/`. Skills that work with user data (like expenses) store their files there. Check the relevant skill for exact file paths.
+User-specific data lives under `data/users/<user_id>/`. Skills that work with user data store their files there. Check the relevant skill for exact file paths.

@@ -414,6 +414,11 @@ Things I want to add when time allows:
 - **More tools** — email reading, document parsing, code execution sandboxes, connectors
 - **Better dashboard** — run comparisons, track costs
 
+### Known issues
+
+- Latency: the workflows are still a bit slow, possibly due to how DeepAgents and Middleware are structured. We are working on this.
+- Message Board: always show the general, fuzzy board first, even if an agent from a specific run is asking a question.
+
 ## Contributing
 
 PRs are welcome! But bear in mind that this is a personal project. Claude is obviously part of our team, but we have limits.

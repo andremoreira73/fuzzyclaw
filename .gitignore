@@ -66,8 +66,15 @@ design_notes_backup*.md
 # new local files are ignored — use `git add -f` for new examples)
 agents/*
 !agents/.gitkeep
+!agents/career-scraper.md
+!agents/fuzzy.md
+!agents/market-researcher.md
+!agents/shenlong.md
+!agents/web-scraper.md
+
 skills/*
 !skills/.gitkeep
+!skills/market-research/
 !skills/guest-agent/
 
 ###

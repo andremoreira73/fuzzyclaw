@@ -64,6 +64,7 @@ design_notes_backup*.md
 
 # Agent and skill definitions (tracked base files update with pulls;
 # new local files are ignored — use `git add -f` for new examples)
+#
 agents/*
 !agents/.gitkeep
 !agents/career-scraper.md

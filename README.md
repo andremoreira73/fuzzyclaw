@@ -295,16 +295,23 @@ This builds per-agent images (sub-second — they just `COPY` the `.md` file ont
 
 #### Customizing base agents
 
-FuzzyClaw ships with base agents (Fuzzy, Shenlong, etc.) that are tracked in git. If you customize one — for example, changing Fuzzy's personality or a specialist's system prompt — you'll want to stop tracking it so future `git pull` doesn't overwrite your changes or cause conflicts:
+FuzzyClaw ships with base agents (Fuzzy, Shenlong, etc.) and skills that are tracked in git. If you want to customize them — changing Fuzzy's personality, a specialist's system prompt, or a skill's workflow — create a personal branch:
 
 ```bash
-# 1. Edit the agent to your taste
-# 2. Stop tracking it
-git rm --cached agents/fuzzy.md
-# 3. Remove the exception line (!agents/fuzzy.md) from .gitignore
+git checkout -b personal
+# edit agents or skills to your taste, then commit
+git add agents/fuzzy.md
+git commit -m "customize fuzzy for my instance"
 ```
 
-Your customized file stays on disk and keeps working. The same applies to any base skill in `skills/`.
+To pull upstream updates:
+
+```bash
+git fetch origin
+git merge origin/main
+```
+
+Files you didn't both touch merge cleanly. Files you both changed give a conflict to resolve — which is what you want, since it means upstream improved something worth reviewing.
 
 **Note on Fuzzy:** Fuzzy's Docker Compose service mounts `agents/fuzzy.md` by name, so the file must keep that filename. You can change everything inside it — model, prompt, tools — but don't rename it.
 

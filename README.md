@@ -293,6 +293,21 @@ Every agent runs inside its own Docker image — a thin layer on top of a shared
 
 This builds per-agent images (sub-second — they just `COPY` the `.md` file onto the base) and restarts the Celery worker so the coordinator sees the updated agent registry. The base image (~437MB) only rebuilds if `requirements-agent.txt` changed or you pass `--force`.
 
+#### Customizing base agents
+
+FuzzyClaw ships with base agents (Fuzzy, Shenlong, etc.) that are tracked in git. If you customize one — for example, changing Fuzzy's personality or a specialist's system prompt — you'll want to stop tracking it so future `git pull` doesn't overwrite your changes or cause conflicts:
+
+```bash
+# 1. Edit the agent to your taste
+# 2. Stop tracking it
+git rm --cached agents/fuzzy.md
+# 3. Remove the exception line (!agents/fuzzy.md) from .gitignore
+```
+
+Your customized file stays on disk and keeps working. The same applies to any base skill in `skills/`.
+
+**Note on Fuzzy:** Fuzzy's Docker Compose service mounts `agents/fuzzy.md` by name, so the file must keep that filename. You can change everything inside it — model, prompt, tools — but don't rename it.
+
 ### Production Deployment
 
 FuzzyClaw ships with production-ready files for deploying to a VM behind nginx + HTTPS:
